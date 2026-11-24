@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    package="com.jdh.simplehe"
+    android:versionCode="24"
+    android:versionName="2.4">
+
+    <uses-sdk android:minSdkVersion="27" android:targetSdkVersion="33" />
+
+    <!-- 纯挂载模块：无 Activity、无 Provider、无自定义图标、无桌面入口。 -->
+    <application
+        android:allowBackup="false"
+        android:hasCode="true"
+        android:label="@string/app_name">
+
+        <meta-data android:name="xposedmodule" android:value="true" />
+        <meta-data
+            android:name="xposeddescription"
+            android:value="为小鹤双拼提供简单鹤的首选置顶与精确上屏，其余候选完整保留豆包原生结果。" />
+        <meta-data android:name="xposedminversion" android:value="82" />
+        <meta-data android:name="xposedscope" android:value="com.bytedance.android.doubaoime" />
+    </application>
+</manifest>
