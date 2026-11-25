@@ -11,7 +11,7 @@
 
 - 适用：豆包输入法 `com.bytedance.android.doubaoime`（实测 1.5.6）
 - 环境：Android 8.0+，LSPosed / NPatch 内置
-- 当前版本：**2.4**
+- 当前版本：**2.7**
 - 词库：直接取自 [Ktouls/rime-JDhe-CyIME](https://github.com/Ktouls/rime-JDhe-CyIME) 的 yaml，137,228 码
 
 ---
@@ -117,7 +117,7 @@ click_fix=1           # 点击对齐
 click_ttl_ms=2500
 space_override=1      # 空格上屏简单鹤首选
 space_ttl_ms=1500
-debug=1               # 0 = 只写 INIT/ERR
+debug=0               # 默认 0（只写 INIT/ERR），排查问题可改 1
 ```
 
 1.x 的两个老开关仍然有效：`jdh_enable` 首行 `0` 关闭；`jdh_mode` 仅作记录。
@@ -155,6 +155,31 @@ python3 tools/gen_dict.py /path/to/rime-JDhe-CyIME assets/jdh_dict_multi.txt
 不能重排 —— 这一点必须原样保留。
 
 生成后放到 `assets/jdh_dict_multi.txt`，再打包。
+
+### 校验扁平词库映射
+
+2.7 起词库在内存中是**扁平无对象结构**：编码按每字符 5 bit 打包成 `int`，
+词条顺序拼进单个 `byte[]`，偏移与长度压进 `long[]`，查询走 `Arrays.binarySearch`。
+编码映射一旦算错，整个词库会静默失效，所以改这块之前先跑校验：
+
+```bash
+javac -d /tmp/dictcheck tools/dictcheck/DictVerify.java
+java -cp /tmp/dictcheck DictVerify assets/jdh_dict_multi.txt
+```
+
+它把新算法与朴素 `HashMap` 版本对着同一个词库全量比对，输出：
+
+```
+扁平词库: 137228 码, 池=1655KB, maxCodeLen=4, 加载=85ms
+朴素词库: 137228 码, 加载=49ms
+全量对比: 检查 137228 码, 失败 0
+多余码: 0
+碰撞检查完成, 不同 key 数=137228
+结论: 通过
+```
+
+三项都要为 0：`失败`（查询缺失或值不一致）、`多余码`（反向多出）、
+以及「不同 key 数」必须等于码数（否则打包碰撞）。
 
 ---
 
@@ -219,6 +244,19 @@ cs|na  ==  csn|a
 
 一句话：**在豆包候选栏里能自然表达的，只有"哪些词排前面"。**
 
+**只挂载主进程（2.7 起）**
+
+`handleLoadPackage` 只在 `com.bytedance.android.doubaoime`（主进程）安装 Hook，
+子进程一律跳过，避免重复加载 13.7 万码词库。
+
+如果装完发现**功能完全没反应**，先看日志里 `INIT` 那行记录的 `进程=`：
+若键盘业务跑在 `:ime` 之类的子进程里，需要把白名单放宽回去。
+排查命令：
+
+```bash
+grep "INIT" /sdcard/Download/jdh_he.log | tail -3
+```
+
 ---
 
 ## 七、版本历史
@@ -230,7 +268,10 @@ cs|na  ==  csn|a
 | 2.1 | 全塞：简单鹤 + 豆包顺延；改用 `args[27]` 判模式；词库后台加载 |
 | 2.2 | 触摸按下时冻结画面，用配对表对齐上屏 |
 | 2.3 | 确认点击走 native；用 `args[1]` 格索引；在 `commitText` 上对齐 |
-| **2.4** | **修跨编码误替换**：所有放手路径作废画面，点击前校验编码一致 |
+| 2.4 | **修跨编码误替换**：所有放手路径作废画面，点击前校验编码一致 |
+| 2.5 | **修非汉字原生候选漏替换**：记录豆包原生第 0 格，修复 `of`/`or`/`oa`/`on` 快捷符号与 `sm`（`SM`）空格/点击不上屏简单鹤首选的问题，并在 `commitText` 补空格兜底 |
+| 2.6 | **性能优化**：`HeLog` 改为后台单线程异步写盘并默认关闭过程日志；`merge()` 去除 `HashSet`/`ArrayList` 热路径分配；词库改为单遍手写切分加载、消除启动 `NPE` 并跳过后台子进程 |
+| **2.7** | **深层优化与加固**：词库改为 `int[]` 编码索引 + 单一 `byte[]` 池（仅 3 个常驻数组、~3.2MB 内存，消除 ~50 万堆对象 GC 负担）；修复去重后 `args[3]`/`args[4]` 辅助串错位；精确 Hook 5 参 `DoCommit`；跨码清理残留状态并收窄尾格；仅放行输入法主进程 |
 
 ---
 

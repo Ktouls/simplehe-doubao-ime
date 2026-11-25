@@ -139,7 +139,45 @@ CLICK:    编码=mwufme 格0 显示[美神] 引擎[没什么]   ← 错
 
 ---
 
-## 6. 词库顺序
+## 6. 2.5 修的那个 bug：非汉字原生候选漏替换
+
+```
+编码=of/or/oa/on → 简单鹤首选=《 / ） / ！ / ；，豆包第 0 格="of"/"or"/"oa"/"on"
+编码=sm          → 简单鹤首选=什么，部分设备豆包第 0 格="SM"
+```
+
+原因：旧版 `onDoCommit` 与 `onCommitText` 均用 `!containsHan(...)` 过滤待替换文本，
+导致豆包原生第 0 格为纯字母或非汉字时直接放行，候选栏显示正确但空格/点选依然上屏字母。
+
+修法：
+
+1. `merge()` 时记录豆包原生第 0 格 `exactEngineFirst`；
+2. `onDoCommit()` 改为 `shouldSpaceReplace()`：只要非纯空白，且命中 `exactEngineFirst`、
+   忽略大小写命中当前编码 `exactCode`、或包含汉字，均替换为简单鹤首选；
+3. `onCommitText()` 移除冗余的 `!containsHan(text)` 限制，并补充 `spaceArmed` 兜底，
+   防止豆包对纯字母候选跳过 `DoCommit` 直接走 `commitText`。
+
+---
+
+## 7. 2.6 性能优化要点
+
+1. **热路径零磁盘 I/O**：`cfgDebug` 默认关闭（`false`），且 `HeLog` 改为 `ArrayBlockingQueue` + 单后台守护线程批量写盘与定时 flush，消除打字停顿后首键在 FUSE 上同步 `flush()` 造成的毛刺，同时将 `SimpleDateFormat` 隔离到后台线程。
+2. **热路径去重零集合分配**：`merge()` 不再每次按键创建 `ArrayList` × 2 与 `HashSet`，改为栈上直接构造定长数组，并通过小循环比对 `0..own-1`（通常 1~3 格）完成去重。
+3. **冷启动提速与减内存**：`openDict()` 优先走 `ClassLoader.getResourceAsStream`，消除每次启动必现的 `ProtectionDomain` 空指针异常；`parse()` 改为单遍流式读取 + `indexOf(' ')` 手写切分，去掉 13.7 万行的 `codes`/`raw` 临时容器与正则 `split`；`handleLoadPackage` 跳过 `:push`/`:daemon` 等后台子进程。
+4. **状态原子化与辅助串对齐**：将 `code`、`shown`、`own`、`engineFirst` 统一收口进不可变 `Paint` 快照；合并时同步将 `args[3]`/`args[4]` 前 `own` 格置 `null` 并顺延其余格，避免辅助提示错位。
+
+---
+
+## 8. 2.7 深层优化：扁平无对象词库与边界加固
+
+1. **扁平无对象词库（`FlatDict`）**：137,228 个 `1~4` 码（支持至 6 码）按每字符 5 bit 无损打包成 30-bit `int` 并升序存放于 `int[] keys`，词条 UTF-8 字节顺序拼入单一 `byte[] pool`，偏移与长度压缩进 `long[] meta`（高 44 bit 偏移 + 低 20 bit 长度）。全库仅 **3 个基本类型数组、约 3.2 MB 堆内存**，相比 `HashMap<String, String[]>` 消除了约 50 万个常驻 Java 对象的 ART GC 扫描开销，查询走 `Arrays.binarySearch` 最多 17 次整数比较。
+2. **辅助串精确下标映射**：`merge()` 在去重豆包候选时同步记录每个保留词的原始下标 `origIdx[]`，`syncAuxArray()` 按 `origIdx` 精确拷贝 `args[3]`/`args[4]`（简单鹤自有格置 `null`），彻底消除跳过重复词引起的辅助提示错位。
+3. **数组双向扩缩**：`resizeArrays()` 同时处理扩展与收窄，避免 `shown.length < words.length` 时尾部留出 `""` 空白占位格。
+4. **精确 Hook 与主进程白名单**：`DoCommit` 优先精确 Hook 5 参实现（减少 3/4 参桥接重载的 Xposed 分发）；`merge()` 检测到编码切换时主动清理上一帧残留的点击与空格状态；进程过滤锁死仅放行主进程 `com.bytedance.android.doubaoime`。
+
+---
+
+## 9. 词库顺序
 
 `jde.dict.yaml` 191,096 行全是 2 列（`词 \t 码`），没有权重列。
 
@@ -152,7 +190,7 @@ CLICK:    编码=mwufme 格0 显示[美神] 引擎[没什么]   ← 错
 
 ---
 
-## 7. 为什么不做长句形码筛选
+## 10. 为什么不做长句形码筛选
 
 双拼音节是定长 2 字母（`wo|zd|ce|ui|yi|xx` = 我在测试一下）。
 简单鹤"音节 + 形码"是 2 + 2 = 4 字母。

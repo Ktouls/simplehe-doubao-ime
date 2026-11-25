@@ -1,4 +1,4 @@
-# 简单鹤音形挂载 2.4 配置
+# 简单鹤音形挂载 2.7 配置
 # 放到 /sdcard/Download/jdh_config，改完强停豆包重开生效。
 
 enable=1
@@ -24,5 +24,5 @@ click_ttl_ms=2500
 space_override=1
 space_ttl_ms=1500
 
-# 1=写过程日志；0=只写 INIT/ERR
-debug=1
+# 1=写过程日志；0=只写 INIT/ERR（2.6 起默认 0，减少打字路径开销）
+debug=0
