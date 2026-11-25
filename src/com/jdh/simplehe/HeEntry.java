@@ -27,7 +27,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 2.7。
+ * 简单鹤音形挂载 2.8。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -154,6 +154,12 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static volatile long spaceAt;
     private static volatile int lastMode = -1;
 
+    /** 分段选词态：点击候选后若未上屏且剩余编码缩短，说明豆包正处于长句/分段选词，后续尾段交还豆包。 */
+    private static volatile int lastSnapshotCodeLen;
+    private static volatile boolean pendingPartialClick;
+    private static volatile int clickedCodeLen;
+    private static volatile boolean inPartialSelection;
+
     private static final Set<String> longSamples = new HashSet<>();
     private static Field asrFlag;
 
@@ -165,7 +171,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 2.7 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 2.8 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal
@@ -515,35 +521,59 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
     private static void onSnapshot(Object[] args) {
         if (args == null || args.length <= ARG_MODE) {
+            resetPartialSelection();
             clearExact();
             return;
         }
 
         Object modeObj = args[ARG_MODE];
         if (!(modeObj instanceof Integer)) {
+            resetPartialSelection();
             clearExact();
             return;
         }
         lastMode = (Integer) modeObj;
         if (lastMode != MODE_DOUBLE_SPELL) {
+            resetPartialSelection();
             clearExact();
             return;
         }
 
         String code = args[ARG_CODE] instanceof CharSequence ? args[ARG_CODE].toString() : "";
         if (code.isEmpty() || !isTypingCode(code)) {
-            clearExact();
-            return;
-        }
-
-        FlatDict currentDict = dict;
-        if (currentDict == null) {
+            resetPartialSelection();
             clearExact();
             return;
         }
 
         String[] words = args[ARG_WORDS] instanceof String[] ? (String[]) args[ARG_WORDS] : null;
         if (words == null || words.length == 0) {
+            resetPartialSelection();
+            clearExact();
+            return;
+        }
+
+        // 点击候选后若未触发上屏且编码变短，判定为分段选词（如长句选完前半段后的剩余尾段），全程交还豆包
+        if (pendingPartialClick) {
+            if (code.length() < clickedCodeLen) {
+                inPartialSelection = true;
+                pendingPartialClick = false;
+                if (cfgDebug) {
+                    HeLog.throttled("PARTIAL", "进入分段选词，剩余编码=" + code + "，交还豆包");
+                }
+            } else if (code.length() > clickedCodeLen) {
+                pendingPartialClick = false;
+            }
+        }
+        lastSnapshotCodeLen = code.length();
+
+        if (inPartialSelection) {
+            clearExact();
+            return;
+        }
+
+        FlatDict currentDict = dict;
+        if (currentDict == null) {
             clearExact();
             return;
         }
@@ -723,6 +753,13 @@ public final class HeEntry implements IXposedHookLoadPackage {
         spaceArmed = false;
     }
 
+    private static void resetPartialSelection() {
+        inPartialSelection = false;
+        pendingPartialClick = false;
+        clickedCodeLen = 0;
+        lastSnapshotCodeLen = 0;
+    }
+
     private static void probeLong(String code) {
         if (longSamples.size() >= 60 || !longSamples.add(code)) return;
         StringBuilder parts = new StringBuilder();
@@ -787,6 +824,12 @@ public final class HeEntry implements IXposedHookLoadPackage {
         int index = args[1] instanceof Integer ? (Integer) args[1] : -1;
         String engineWord = args[3] instanceof String ? (String) args[3] : "";
         String code = args[5] instanceof String ? (String) args[5] : "";
+
+        int baseLen = !code.isEmpty() ? code.length() : lastSnapshotCodeLen;
+        if (baseLen > 0) {
+            clickedCodeLen = baseLen;
+            pendingPartialClick = true;
+        }
 
         Paint paint = lastPaint;
         if (paint == null || index < 0 || index >= paint.shown.length) {
@@ -856,6 +899,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         if (args == null || args.length < 2) return;
         if (!(args[0] instanceof CharSequence)) return;
 
+        resetPartialSelection();
         long now = System.currentTimeMillis();
         String text = args[0].toString();
 
@@ -974,6 +1018,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         if (args == null || args.length < 5) return;
         if (!(args[0] instanceof CharSequence)) return;
 
+        resetPartialSelection();
         long now = System.currentTimeMillis();
 
         // ① 点击：把 Java 层的提交文本/原始文本一起对齐（commitText 那边还有一道）

@@ -11,7 +11,7 @@
 
 - 适用：豆包输入法 `com.bytedance.android.doubaoime`（实测 1.5.6）
 - 环境：Android 8.0+，LSPosed / NPatch 内置
-- 当前版本：**2.7**
+- 当前版本：**2.8**
 - 词库：直接取自 [Ktouls/rime-JDhe-CyIME](https://github.com/Ktouls/rime-JDhe-CyIME) 的 yaml，137,228 码
 
 ---
@@ -156,31 +156,6 @@ python3 tools/gen_dict.py /path/to/rime-JDhe-CyIME assets/jdh_dict_multi.txt
 
 生成后放到 `assets/jdh_dict_multi.txt`，再打包。
 
-### 校验扁平词库映射
-
-2.7 起词库在内存中是**扁平无对象结构**：编码按每字符 5 bit 打包成 `int`，
-词条顺序拼进单个 `byte[]`，偏移与长度压进 `long[]`，查询走 `Arrays.binarySearch`。
-编码映射一旦算错，整个词库会静默失效，所以改这块之前先跑校验：
-
-```bash
-javac -d /tmp/dictcheck tools/dictcheck/DictVerify.java
-java -cp /tmp/dictcheck DictVerify assets/jdh_dict_multi.txt
-```
-
-它把新算法与朴素 `HashMap` 版本对着同一个词库全量比对，输出：
-
-```
-扁平词库: 137228 码, 池=1655KB, maxCodeLen=4, 加载=85ms
-朴素词库: 137228 码, 加载=49ms
-全量对比: 检查 137228 码, 失败 0
-多余码: 0
-碰撞检查完成, 不同 key 数=137228
-结论: 通过
-```
-
-三项都要为 0：`失败`（查询缺失或值不一致）、`多余码`（反向多出）、
-以及「不同 key 数」必须等于码数（否则打包碰撞）。
-
 ---
 
 ## 五、构建
@@ -258,7 +233,8 @@ cs|na  ==  csn|a
 | 2.4 | **修跨编码误替换**：所有放手路径作废画面，点击前校验编码一致 |
 | 2.5 | **修非汉字原生候选漏替换**：记录豆包原生第 0 格，修复 `of`/`or`/`oa`/`on` 快捷符号与 `sm`（`SM`）空格/点击不上屏简单鹤首选的问题，并在 `commitText` 补空格兜底 |
 | 2.6 | **性能优化**：`HeLog` 改为后台单线程异步写盘并默认关闭过程日志；`merge()` 去除 `HashSet`/`ArrayList` 热路径分配；词库改为单遍手写切分加载、消除启动 `NPE` 并跳过后台子进程 |
-| **2.7** | **深层优化与加固**：词库改为 `int[]` 编码索引 + 单一 `byte[]` 池（仅 3 个常驻数组、~3.2MB 内存，消除 ~50 万堆对象 GC 负担）；修复去重后 `args[3]`/`args[4]` 辅助串错位；精确 Hook 5 参 `DoCommit`；跨码清理残留状态并收窄尾格；仅放行输入法主进程 |
+| 2.7 | **深层优化与加固**：词库改为 `int[]` 编码索引 + 单一 `byte[]` 池（仅 3 个常驻数组、~3.2MB 内存，消除 ~50 万堆对象 GC 负担）；修复去重后 `args[3]`/`args[4]` 辅助串错位；精确 Hook 5 参 `DoCommit`；跨码清理残留状态并收窄尾格；仅放行输入法主进程 |
+| **2.8** | **修长句分段选词错位**：点击候选后若未触发上屏且剩余编码缩短，自动锁定分段选词态并将后续尾段全程交还豆包，直至整句上屏或清空编码 |
 
 ---
 
