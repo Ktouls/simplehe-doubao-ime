@@ -27,7 +27,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 2.8。
+ * 简单鹤音形挂载 2.9。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -171,7 +171,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 2.8 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 2.9 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal

@@ -23,6 +23,23 @@ SOURCES = [
 
 CODE_RE = re.compile(r"^[a-z]{1,4}$")
 
+# ---------------------------------------------------------------------------
+# 补回被「清理 ① 占位」误伤的正规数字符号
+#
+# Ktouls/rime-JDhe-CyIME 为修复「四码首选是 ①」清了 14,111 条含 ① 的词条，
+# 但 oy 系列是「oy + 数字键盘键位」的快速数字符号，属于正规条目：
+#   oyy(y=1) → ① Ⅰ ㊀ （一） -1
+#   oye(e=2) → ② Ⅱ ㊁
+#   ...
+# 其中 oyy 的 ① 被一并删掉（其余 oy 组不受影响，因为只有 ① 出现在四码冗余位）。
+# 上游 V9.1.0 日志「① 在一些四码符号处有冗余，删掉」只针对四码，不含 oyy。
+#
+# 这里只补 oyy 的 ①，四码的冗余（oyyy/oyye/...上的 ①）保持删除。
+RESTORE = {
+    "oyy": "①",
+}
+
+
 
 def rows(path):
     if not os.path.isfile(path):
@@ -68,6 +85,15 @@ def main():
             bucket.append(word)
             added += 1
         print(f"{os.path.basename(path)}: 新增 {added}")
+
+    # 补回被误删的正规符号（插到该码候选项最前，与上游顺序一致）
+    for code, word in RESTORE.items():
+        bucket = table.get(code)
+        if bucket is None:
+            table[code] = [word]
+            order.append(code)
+        elif word not in bucket:
+            bucket.insert(0, word)
 
     with open(OUT, "w", encoding="utf-8", newline="\n") as fh:
         for code in sorted(order):
