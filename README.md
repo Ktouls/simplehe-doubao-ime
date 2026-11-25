@@ -244,19 +244,6 @@ cs|na  ==  csn|a
 
 一句话：**在豆包候选栏里能自然表达的，只有"哪些词排前面"。**
 
-**只挂载主进程（2.7 起）**
-
-`handleLoadPackage` 只在 `com.bytedance.android.doubaoime`（主进程）安装 Hook，
-子进程一律跳过，避免重复加载 13.7 万码词库。
-
-如果装完发现**功能完全没反应**，先看日志里 `INIT` 那行记录的 `进程=`：
-若键盘业务跑在 `:ime` 之类的子进程里，需要把白名单放宽回去。
-排查命令：
-
-```bash
-grep "INIT" /sdcard/Download/jdh_he.log | tail -3
-```
-
 ---
 
 ## 七、版本历史
