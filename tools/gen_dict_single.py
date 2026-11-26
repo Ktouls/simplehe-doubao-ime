@@ -3,16 +3,25 @@
 
 本分支定位
 ----------
-豆包输入法的词库、整句、联想已经很好用。模块只补两件事：
-1. **简单鹤音形码能确定某个汉字**时，把该单字置顶；
-2. **快捷符号**（`oy` 系列的带圈数字 / 罗马数字 / `$ ￥` / `-1`、标点连打等）保留，
-   这类在豆包里没有对应通道，属于简单鹤的独有能力。
+**1~3 码（一简 / 二简 / 三简）完全不动**，原样挂载。
+简单鹤的简码体系（`jde → 简单鹤`、`jd → 简单 见到 觉得`、`daj → 打 档案夹 档案局`）
+是方案的核心，不能筛选。
 
-**剔除快捷词与多字词**：`jd`/`jde`、`欧亚大陆`、`一千万`、`阿sir`、`B站` 等
-一律不挂，完全交给豆包，避免干扰它自身的词库与整句。
+**4 码做筛选**：只保留汉字单字与快捷符号。4 码在简单鹤里主要是
+「音节+音节+形码」的精确位与各类符号位，多字词交给豆包更合适。
+
+    csn → 悰 䈡（简单鹤单字置顶） + 从哪 从南 …（豆包原生整句候选）
+    jde → 简单鹤（三简，保留）
+    jd  → 简单 见到 觉得（二简，保留）
+    oyy → ① Ⅰ ㊀ （一） -1（符号，保留）
+    jdh → 豆包自己的候选（四码多字词，剔除）
 
 保留规则
 --------
+码长 ≤ 3（一简/二简/三简）：
+    **全部保留**，不做任何筛选。
+
+码长 4：
 1. 汉字单字（恰好 1 字符，U+4E00–9FFF / U+3400–4DBF）→ 保留
 2. 不含汉字的候选 → 视为符号，保留；但**纯英文单词/缩写剔除**
    （`ASMR` / `Ctrl` / `ChatGPT` 这类是词不是符号）
@@ -50,10 +59,16 @@ def han_count(word: str) -> int:
     return sum(1 for c in word if is_han(c))
 
 
-def keep(word: str) -> bool:
-    """是否保留该候选。"""
+def keep(word: str, code_len: int) -> bool:
+    """是否保留该候选。
+
+    1~3 码（一简/二简/三简）全部保留，简单鹤的简码体系不动。
+    4 码只留汉字单字与符号。
+    """
     if not word:
         return False
+    if code_len <= 3:
+        return True
     # 1. 汉字单字
     if len(word) == 1 and is_han(word):
         return True
@@ -83,11 +98,11 @@ def rows(path):
         if len(parts) < 2:
             continue
         word = parts[0].strip()
-        if not keep(word):
-            continue
         for single in parts[1].split(","):
             code = single.split(";")[0].strip()
-            if CODE_RE.fullmatch(code):
+            if not CODE_RE.fullmatch(code):
+                continue
+            if keep(word, len(code)):
                 yield code, word
 
 
@@ -120,9 +135,10 @@ def main():
     items = sum(len(v) for v in table.values())
     single = sum(1 for v in table.values() for w in v if len(w) == 1 and is_han(w))
     sym = sum(1 for v in table.values() for w in v if han_count(w) == 0)
+    multi = items - single - sym
     print()
     print("读入行", total, "编码数", len(table), "候选项", items)
-    print(f"  汉字单字 {single}  符号 {sym}  括号数字 {items - single - sym}")
+    print(f"  汉字单字 {single}  符号 {sym}  前三码含多字词 {multi}（一简/二简/三简，原样保留）")
     print("码长分布", dict(sorted(lens.items())))
     print("写出", OUT, os.path.getsize(OUT), "bytes")
 
