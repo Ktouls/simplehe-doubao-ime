@@ -6,6 +6,7 @@
 ```
 打 csn   →  悰 䈡（简单鹤单字置顶） + 从哪 从南 …（豆包原生整句候选）
 打 oyy   →  ① Ⅰ ㊀ （一） -1（简单鹤快捷符号，保留）
+打 ofyu  →  ① ② ③ ④ ⑤ ⑥ ⑦ ⑧ ⑨ ⑩
 打 jde   →  豆包自己的候选（本版不挂快捷词）
 ```
 
@@ -17,7 +18,7 @@
 - 环境：Android 8.0+，LSPosed / NPatch 内置
 - 当前版本：**3.0**（单字分支）
 - 词库：`tools/gen_dict_single.py` 从 [Ktouls/rime-JDhe-CyIME](https://github.com/Ktouls/rime-JDhe-CyIME) 的 yaml 生成，
-  **33,525 码 / 42,452 单字 + 1,490 符号**，327 KB（完整版是 137,228 码）
+  **33,525 码 / 42,452 单字 + 1,481 符号**，327 KB（完整版是 137,228 码）
 
 ---
 
@@ -146,7 +147,7 @@ debug=0               # 默认 0（只写 INIT/ERR），排查问题可改 1
 
 ```bash
 python3 tools/gen_dict_single.py /path/to/rime-JDhe-CyIME assets/jdh_dict_multi.txt
-# 输出：33,525 码 / 42,452 单字 + 1,490 符号 / 327 KB
+# 输出：33,525 码 / 42,452 单字 + 1,481 符号 / 327 KB
 ```
 
 **只保留汉字单字**。规则：
