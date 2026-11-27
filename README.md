@@ -21,7 +21,7 @@
 | | 完整版（本分支） | 简码保留版 |
 |---|---|---|
 | 分支 | `main` | `single-only` |
-| 版本 | **3.6** | **3.6** |
+| 版本 | **3.7** | **3.7** |
 | 词库来源 | 上游 yaml 全量，**原样不改** | 生成时筛选四码 |
 | 一简 / 二简 / 三简 | 全留 | 全留 |
 | 四码：该码有单字 | **全挂**（字、词、符号） | 只挂单字与符号，词剔除 |
@@ -31,8 +31,8 @@
 | 词库 / APK | 2.50 MB / 1.36 MB | 2.33 MB / 1.29 MB |
 | 适合 | 想要完整码表、词都在候选栏第一屏 | 四码打单字更准，位次固定 |
 
-- [下载 完整版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-full/SimpleHe-DoubaoIME-3.6-full.apk)（本页）
-- [下载 简码保留版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-single/SimpleHe-DoubaoIME-3.6-single.apk)
+- [下载 完整版 3.7](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.7-full/SimpleHe-DoubaoIME-3.7-full.apk)（本页）
+- [下载 简码保留版 3.7](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.7-single/SimpleHe-DoubaoIME-3.7-single.apk)
 
 两个版本签名相同（`c98b2032…`），可以互相覆盖安装，也可以按需来回切换。
 
@@ -294,7 +294,8 @@ cs|na  ==  csn|a
 | 3.3（简码保留分支） | 四码单字一律让位：取消常用字判断，首选只要是汉字单字（不分常用/生僻）就固定排第 2 |
 | 3.4 | 与简码保留版同批发布、README 区分介绍。完整版行为保持 3.0 原样：**词库优先、豆包顺延，不做位次调整** |
 | 3.5（简码保留分支） | 四码无单字则保留词（`smuh → 什么时候`） |
-| **3.6** | **两版同步**：修「单击注入候选弹出固定首位」（注入格改借第一个普通词类型候选的 ID/类型，不再借末位）；新增 `TAP`/`CLICKMISS` 打点与 `INIT` 长按阈值。完整版行为仍不变，只是点击更稳 |
+| 3.6 | 两版同步：修「单击注入候选弹出固定首位」（注入格改借第一个普通词类型候选的 ID/类型，不再借末位）；新增 `TAP`/`CLICKMISS` 打点与 `INIT` 长按阈值。完整版行为仍不变，只是点击更稳 |
+| **3.7** | 与简码保留版同步发版、版本号对齐。简码版修了扩展区汉字（`𫵷`、`𨭉` 这类，Java 里占 2 个 char）不被当单字、不触发让位的问题；**完整版不做位次调整，因此功能与 3.6 相同，仅版本号对齐**。如需修 `𫵷` 类字的位次，请用简码保留版 |
 | 3.5（简码保留分支） | 四码该码没有单字时保留词（如 `smuh → 什么时候`），选词规则细化 |
 
 ---
