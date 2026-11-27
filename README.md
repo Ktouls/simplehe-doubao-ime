@@ -21,7 +21,7 @@
 | | 完整版（本分支） | 简码保留版 |
 |---|---|---|
 | 分支 | `main` | `single-only` |
-| 版本 | **3.4** | **3.5** |
+| 版本 | **3.6** | **3.6** |
 | 词库来源 | 上游 yaml 全量，**原样不改** | 生成时筛选四码 |
 | 一简 / 二简 / 三简 | 全留 | 全留 |
 | 四码：该码有单字 | **全挂**（字、词、符号） | 只挂单字与符号，词剔除 |
@@ -31,8 +31,8 @@
 | 词库 / APK | 2.50 MB / 1.36 MB | 2.33 MB / 1.29 MB |
 | 适合 | 想要完整码表、词都在候选栏第一屏 | 四码打单字更准，位次固定 |
 
-- [下载 完整版 3.4](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.4-full/SimpleHe-DoubaoIME-3.4-full.apk)（本页）
-- [下载 简码保留版 3.5](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.5-single/SimpleHe-DoubaoIME-3.5-single.apk)
+- [下载 完整版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-full/SimpleHe-DoubaoIME-3.6-full.apk)（本页）
+- [下载 简码保留版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-single/SimpleHe-DoubaoIME-3.6-single.apk)
 
 两个版本签名相同（`c98b2032…`），可以互相覆盖安装，也可以按需来回切换。
 
@@ -119,6 +119,11 @@ Java 侧我们塞进 `args[2]` 的词、改过的 `expectedText`，对它只是�
 4. 在 `DoCommit`（Java 记账）和 `InputConnectionWrapper.commitText`
    （真正落到输入框）两处，把"豆包准备上屏的那个词"换成目标词。
 
+5. 注入格（我们自己画上去的那几格）是"假候选"，ID / 类型都借用豆包自己的候选。
+   借哪个有讲究：**必须借"普通词类型"（`type == 1`）的候选**，所以代码里扫第一个
+   `types[i] == 1` 作为种子。借到推荐图标、用户词、工具项这类 `type`，豆包会把这一格
+   当成"可操作候选项"，单击就弹「固定首位」气泡而不上屏（3.6 修的正是这个）。
+
 第 3 步是 2.4 补上的关键校验。之前漏了它，`mwufme`（简单鹤无此码）会取到
 上一帧 `mwuf` 的画面，把豆包的「没什么」替换成「美神」。
 
@@ -136,6 +141,12 @@ Java 侧我们塞进 `args[2]` 的词、改过的 `expectedText`，对它只是�
 
 1. 把模块 APK 放进 NPatch 的模块列表，内置到豆包；
 2. 安装内置产物，强停重开。
+
+### 自己打包的人注意（Android 11+）
+
+`targetSdk >= 30` 的 APK，`resources.arsc` 必须以 **STORED（未压缩）+ 4 字节对齐** 存放，
+否则解析阶段就报 `INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED`，表现为"文件不被识别成安装包、
+系统安装器不弹界面"。`tools/repack.py` 从 3.6 起自动处理并校验这一点。
 
 模块没有桌面图标、没有管理页，这是有意的（纯挂载，不占地方）。
 
@@ -170,6 +181,8 @@ debug=0               # 默认 0（只写 INIT/ERR），排查问题可改 1
 | `CLICKUP` | 不干预的原因 |
 | `CLICKFIX` / `COMMITFIX` | 上屏对齐了 |
 | `SPACEPUT` | 空格替换了 |
+| `TAP` | 点击判定打点：格索引、按住时长、系统长按阈值、该格 `id`/`type` |
+| `CLICKMISS` | 点击后上屏的文本与「显示格」「引擎词」都不符（对齐盲区） |
 | `LONGSKIP` | 超长码交还豆包（带双拼切分，供分析） |
 
 ---
@@ -279,7 +292,9 @@ cs|na  ==  csn|a
 | 3.1（简码保留分支） | 四码若含扩展生僻字，主表候选一并挂上、生僻字垫底 |
 | 3.2（简码保留分支） | 四码生僻字自动让位：首选是生僻字时豆包首选占第 1、简单鹤字排第 2 |
 | 3.3（简码保留分支） | 四码单字一律让位：取消常用字判断，首选只要是汉字单字（不分常用/生僻）就固定排第 2 |
-| **3.4** | 与简码保留版同批发布、README 区分介绍。完整版行为保持 3.0 原样：**词库优先、豆包顺延，不做位次调整** |
+| 3.4 | 与简码保留版同批发布、README 区分介绍。完整版行为保持 3.0 原样：**词库优先、豆包顺延，不做位次调整** |
+| 3.5（简码保留分支） | 四码无单字则保留词（`smuh → 什么时候`） |
+| **3.6** | **两版同步**：修「单击注入候选弹出固定首位」（注入格改借第一个普通词类型候选的 ID/类型，不再借末位）；新增 `TAP`/`CLICKMISS` 打点与 `INIT` 长按阈值。完整版行为仍不变，只是点击更稳 |
 | 3.5（简码保留分支） | 四码该码没有单字时保留词（如 `smuh → 什么时候`），选词规则细化 |
 
 ---
