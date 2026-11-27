@@ -167,7 +167,10 @@ def main():
     multi = items - single - sym
     print()
     print("读入行", total, "编码数", len(table), "候选项", items)
-    print(f"  汉字单字 {single}  符号 {sym}  前三码含多字词 {multi}（一简/二简/三简，原样保留）")
+    four_multi = sum(1 for c, v in table.items() if len(c) == 4
+                     for w in v if len(w) > 1 and han_count(w) > 0)
+    print(f"  汉字单字 {single}  符号 {sym}  多字词 {multi}"
+          f"（其中四码无单字码保留的 {four_multi}，其余在一简/二简/三简）")
     print("码长分布", dict(sorted(lens.items())))
     print("写出", OUT, os.path.getsize(OUT), "bytes")
 
