@@ -624,37 +624,18 @@ public final class HeEntry implements IXposedHookLoadPackage {
             spaceArmed = false;
         }
 
-        // 四码单字让位：简单鹤首选是汉字单字时，豆包首选占第 1 位，该字固定排第 2。
-        // 不分常用/生僻——位置统一，不必再判断它常不常用。词与符号仍然占第 1 位。
-        boolean demote = false;
-        String mineFirst = mine[0];
-        if (code.length() == 4 && isHanChar(mineFirst)
-                && words.length > 0 && words[0] != null && !words[0].isEmpty()
-                && !words[0].equals(mineFirst)) {
-            demote = true;
-        }
-
         int cap = Math.min(maxTotal, own + words.length);
         String[] buf = new String[cap];
         int[] origIdx = new int[cap];
-        int total = 0;
-        int wordFrom = 0;
-        if (demote) {
-            buf[total] = words[0];
-            origIdx[total] = 0;
-            total++;
-            wordFrom = 1;
-        }
-        System.arraycopy(mine, 0, buf, total, own);
-        Arrays.fill(origIdx, total, total + own, -1);
-        int ownStart = total;
-        total += own;
+        System.arraycopy(mine, 0, buf, 0, own);
+        Arrays.fill(origIdx, 0, own, -1);
+        int total = own;
 
-        for (int j = wordFrom; j < words.length; j++) {
+        for (int j = 0; j < words.length; j++) {
             if (total >= cap) break;
             String word = words[j];
             if (word == null || word.isEmpty()) continue;
-            if (containsWord(buf, total, word)) continue;
+            if (containsWord(buf, own, word)) continue;
             buf[total] = word;
             origIdx[total] = j;
             total++;
@@ -676,21 +657,9 @@ public final class HeEntry implements IXposedHookLoadPackage {
         lastPaint = new Paint(code, shown, own, engineFirst);
 
         if (cfgDebug && exact) {
-            if (demote) HeLog.throttled("DEMOTE", "编码=" + code + " 单字[" + mineFirst + "]让位，豆包首选[" + words[0] + "]在前");
             HeLog.throttled("EXACT", "[全塞]编码=" + code + " 简单鹤" + own + "格 + 豆包"
                     + (shown.length - own) + "格 = " + shown.length);
         }
-    }
-
-    /**
-     * 是否是汉字单字（不含多字词、不含符号）。
-     * 四码时只要简单鹤首选是单字，不论常用还是生僻，一律让位到第 2 位：
-     * 手机上四码打单词远多于单个字，固定位次比"猜它常不常用"更省心。
-     */
-    private static boolean isHanChar(String w) {
-        if (w == null || w.length() != 1) return false;
-        char c = w.charAt(0);
-        return (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF);
     }
 
     private static boolean containsWord(String[] arr, int count, String target) {
