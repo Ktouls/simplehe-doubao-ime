@@ -193,7 +193,7 @@ public final class HeLog {
         return "EXACT".equals(tag) || "PREFIX".equals(tag) || "CLICK".equals(tag)
                 || "CLICKUP".equals(tag) || "CLICKFIX".equals(tag) || "COMMITFIX".equals(tag)
                 || "PAINT".equals(tag) || "SPACEPUT".equals(tag) || "SKIPSHORT".equals(tag)
-                || "LONGSKIP".equals(tag) || "PARTIAL".equals(tag) || "WARN".equals(tag);
+                || "LONGSKIP".equals(tag) || "PARTIAL".equals(tag) || "DEMOTE".equals(tag) || "WARN".equals(tag);
     }
 
     private static BufferedWriter openWriter() {

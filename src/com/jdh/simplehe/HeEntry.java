@@ -27,7 +27,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 3.1。
+ * 简单鹤音形挂载 3.2。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -53,6 +53,8 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static final String IC_WRAPPER = "com.bytedance.android.input.editor.InputConnectionWrapper";
     private static final String MODULE_PKG = "com.jdh.simplehe";
     private static final String DICT_ASSET = "assets/jdh_dict_multi.txt";
+    /** 常用字表（GB2312 一级 3755 字）。四码若简单鹤首选是生僻单字，让位给豆包首选。 */
+    private static final String COMMON_ASSET = "assets/common_chars.txt";
 
     private static final String CONFIG_FILE = "/sdcard/Download/jdh_config";
     private static final String SWITCH_FILE = "/sdcard/Download/jdh_enable";
@@ -124,18 +126,24 @@ public final class HeEntry implements IXposedHookLoadPackage {
     }
 
     private static volatile FlatDict dict;
+    /** 常用字集合（GB2312 一级 3755 字）；为空时不做生僻字让位。 */
+    private static final java.util.Set<Character> COMMON = new java.util.HashSet<>(4096);
+    private static volatile boolean commonReady;
 
     /** 一帧画面：原子保存当前编码、简单鹤合并列表及豆包原生首选。 */
     private static final class Paint {
         final String code;
         final String[] shown;
         final int own;
+        /** 简单鹤候选在 shown 里的起始下标（生僻字让位时为 1）。 */
+        final int ownStart;
         final String engineFirst;
 
-        Paint(String code, String[] shown, int own, String engineFirst) {
+        Paint(String code, String[] shown, int own, int ownStart, String engineFirst) {
             this.code = code;
             this.shown = shown;
             this.own = own;
+            this.ownStart = ownStart;
             this.engineFirst = engineFirst;
         }
 
@@ -171,7 +179,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 3.1 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 3.2 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal
@@ -276,6 +284,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
                     }
                     FlatDict loaded = parseFlat(input);
                     dict = loaded;
+                    loadCommonChars();
                     long cost = System.currentTimeMillis() - t0;
                     HeLog.f("INIT", "词库就绪 " + loaded.size() + " 码，最大码长=" + loaded.maxCodeLen
                             + "，池=" + (loaded.pool.length / 1024) + "KB，耗时=" + cost + "ms");
@@ -287,6 +296,100 @@ public final class HeEntry implements IXposedHookLoadPackage {
         loader.setDaemon(true);
         loader.setPriority(Thread.MIN_PRIORITY);
         loader.start();
+    }
+
+    /** 加载常用字表；失败不影响主流程（退化为全部置顶）。 */
+    private static void loadCommonChars() {
+        try {
+            InputStream in = openAsset(COMMON_ASSET);
+            if (in == null) {
+                HeLog.f("ERR", "常用字表打开失败，退化为全部置顶");
+                return;
+            }
+            StringBuilder sb = new StringBuilder(4096);
+            try (java.io.BufferedReader r = new java.io.BufferedReader(
+                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))) {
+                String line;
+                while ((line = r.readLine()) != null) sb.append(line);
+            }
+            for (int i = 0; i < sb.length(); i++) {
+                char c = sb.charAt(i);
+                if (!Character.isWhitespace(c)) COMMON.add(c);
+            }
+            commonReady = !COMMON.isEmpty();
+            HeLog.f("INIT", "常用字表 " + COMMON.size() + " 字");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "常用字表加载异常: " + t);
+        }
+    }
+
+    /** 是否是"常用汉字"：是汉字但不在常用字表 → 生僻。 */
+    private static boolean isRareHan(String w) {
+        if (!commonReady) return false;              // 没有字表就不让位
+        if (w == null || w.length() != 1) return false;
+        char c = w.charAt(0);
+        boolean han = (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF);
+        if (!han) return false;
+        return !COMMON.contains(c);
+    }
+
+    private static InputStream openAsset(String asset) {
+        try {
+            ClassLoader cl = HeEntry.class.getClassLoader();
+            if (cl != null) {
+                InputStream in = cl.getResourceAsStream(asset);
+                if (in != null) return in;
+            }
+        } catch (Throwable ignored) {
+        }
+        try {
+            java.security.ProtectionDomain domain = HeEntry.class.getProtectionDomain();
+            java.security.CodeSource source = domain != null ? domain.getCodeSource() : null;
+            if (source != null && source.getLocation() != null) {
+                File apk = new File(source.getLocation().toURI());
+                if (apk.isFile()) {
+                    java.util.zip.ZipFile zip = new java.util.zip.ZipFile(apk);
+                    java.util.zip.ZipEntry e = zip.getEntry(asset);
+                    if (e != null) {
+                        final java.util.zip.ZipFile z = zip;
+                        return new java.io.FilterInputStream(zip.getInputStream(e)) {
+                            @Override
+                            public void close() throws java.io.IOException {
+                                try { super.close(); } finally { z.close(); }
+                            }
+                        };
+                    }
+                    zip.close();
+                }
+            }
+        } catch (Throwable ignored) {
+        }
+        String[] dirs = {"/data/app", "/data/app-lib", "/mnt/asec"};
+        for (String dir : dirs) {
+            File[] apps = new File(dir).listFiles();
+            if (apps == null) continue;
+            for (File app : apps) {
+                if (!app.getName().contains(MODULE_PKG)) continue;
+                File apk = app.isDirectory() ? new File(app, "base.apk") : app;
+                if (!apk.isFile()) continue;
+                try {
+                    java.util.zip.ZipFile zip = new java.util.zip.ZipFile(apk);
+                    java.util.zip.ZipEntry e = zip.getEntry(asset);
+                    if (e != null) {
+                        final java.util.zip.ZipFile z = zip;
+                        return new java.io.FilterInputStream(zip.getInputStream(e)) {
+                            @Override
+                            public void close() throws java.io.IOException {
+                                try { super.close(); } finally { z.close(); }
+                            }
+                        };
+                    }
+                    zip.close();
+                } catch (Throwable ignored) {
+                }
+            }
+        }
+        return null;
     }
 
     private static InputStream openDict() {
@@ -624,18 +727,37 @@ public final class HeEntry implements IXposedHookLoadPackage {
             spaceArmed = false;
         }
 
+        // 四码生僻字让位：简单鹤首选是生僻单字时，豆包首选占第 1 位，生僻字排第 2。
+        // 目的：uiqk → 豆包「事情」在前、简单鹤「鲥」垫后，避免生僻字抢首选。
+        boolean demote = false;
+        String mineFirst = mine[0];
+        if (code.length() == 4 && isRareHan(mineFirst)
+                && words.length > 0 && words[0] != null && !words[0].isEmpty()
+                && !words[0].equals(mineFirst)) {
+            demote = true;
+        }
+
         int cap = Math.min(maxTotal, own + words.length);
         String[] buf = new String[cap];
         int[] origIdx = new int[cap];
-        System.arraycopy(mine, 0, buf, 0, own);
-        Arrays.fill(origIdx, 0, own, -1);
-        int total = own;
+        int total = 0;
+        int wordFrom = 0;
+        if (demote) {
+            buf[total] = words[0];
+            origIdx[total] = 0;
+            total++;
+            wordFrom = 1;
+        }
+        System.arraycopy(mine, 0, buf, total, own);
+        Arrays.fill(origIdx, total, total + own, -1);
+        int ownStart = total;
+        total += own;
 
-        for (int j = 0; j < words.length; j++) {
+        for (int j = wordFrom; j < words.length; j++) {
             if (total >= cap) break;
             String word = words[j];
             if (word == null || word.isEmpty()) continue;
-            if (containsWord(buf, own, word)) continue;
+            if (containsWord(buf, total, word)) continue;
             buf[total] = word;
             origIdx[total] = j;
             total++;
@@ -654,9 +776,10 @@ public final class HeEntry implements IXposedHookLoadPackage {
         syncAuxArray(args, ARG_AUX_1, origIdx, shown.length);
         syncAuxArray(args, ARG_AUX_2, origIdx, shown.length);
 
-        lastPaint = new Paint(code, shown, own, engineFirst);
+        lastPaint = new Paint(code, shown, own, ownStart, engineFirst);
 
         if (cfgDebug && exact) {
+            if (demote) HeLog.throttled("DEMOTE", "编码=" + code + " 生僻字[" + mineFirst + "]让位，豆包首选[" + words[0] + "]在前");
             HeLog.throttled("EXACT", "[全塞]编码=" + code + " 简单鹤" + own + "格 + 豆包"
                     + (shown.length - own) + "格 = " + shown.length);
         }
