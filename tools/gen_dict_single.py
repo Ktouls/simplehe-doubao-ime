@@ -10,10 +10,13 @@
 **4 码做筛选**：只保留汉字单字与快捷符号。4 码在简单鹤里主要是
 「音节+音节+形码」的精确位与各类符号位，多字词交给豆包更合适。
 
-**四码的词一律不收**：不管是主表词还是扩展表词，四码只留单个汉字与符号。
-该码有扩展生僻字时也一样 —— 生僻字照样保留（它是单字），词照样剔除：
+**四码分两种情况**：
 
-    hvld → 䏨              （主表词 回来/会来 剔除，只剩生僻单字）
+- 该码**有单字** → 只留单个汉字与符号，词剔除（打四码时字优先，词交给豆包）
+- 该码**没有任何单字** → 保留原样，词也挂上（否则这个码就整个丢了）
+
+    hvld → 䏨              （有单字 → 词 回来/会来 剔除，只留生僻单字）
+    smuh → 什么时候         （无单字 → 词保留，豆包候选顺延）
     csn  → 悰 䈡           （简单鹤单字置顶）+ 从哪 从南 …（豆包原生候选）
     jde  → 简单鹤          （三简，保留）
     jd   → 简单 见到 觉得   （二简，保留）
@@ -66,20 +69,22 @@ def han_count(word: str) -> int:
     return sum(1 for c in word if is_han(c))
 
 
-def keep(word: str, code_len: int, is_ext: bool) -> bool:
+def keep(word: str, code_len: int, has_single: bool) -> bool:
     """是否保留该候选。
 
     1~3 码（一简/二简/三简）全部保留，简单鹤的简码体系不动。
 
-    4 码一律精简，不看是否有扩展生僻字：
-      - 单个汉字 → 保留（主表、扩展表都留，生僻字也是单字）
-      - 不含汉字的符号 → 保留，但纯英文单词/缩写剔除
-      - 括号包住的短符号 （一）(10) → 保留
-      - 其余（含汉字的多字词，主表扩展表一概）→ 剔除
+    4 码：
+      - 该码有单字 → 单个汉字保留；符号保留（纯英文单词/缩写剔除）；含汉字的多字词剔除
+      - 该码无单字 → 原样保留（词全留），否则这个四码就彻底没有简单鹤候选
     """
     if not word:
         return False
     if code_len <= 3:
+        return True
+
+    if not has_single:
+        # 无单字的四码：词与符号全部保留
         return True
 
     if len(word) == 1 and is_han(word):
@@ -93,12 +98,13 @@ def keep(word: str, code_len: int, is_ext: bool) -> bool:
     return False
 
 
-def collect_main_single_codes(path):
-    """四码中，主表存在汉字单字的码集合。"""
+def collect_four_single_codes(paths):
+    """全部源表里，四码中存在汉字单字的码集合。"""
     codes = set()
-    for code, word in rows(path):
-        if len(code) == 4 and len(word) == 1 and is_han(word):
-            codes.add(code)
+    for path in paths:
+        for code, word in rows(path):
+            if len(code) == 4 and len(word) == 1 and is_han(word):
+                codes.add(code)
     return codes
 
 
@@ -124,6 +130,9 @@ def rows(path):
 
 
 def main():
+    four_single = collect_four_single_codes(SOURCES)
+    print("四码含单字的码数:", len(four_single))
+
     table = {}
     order = []
     total = 0
@@ -131,7 +140,7 @@ def main():
         is_ext = os.path.basename(path).startswith("jde_ext")
         added = 0
         for code, word in rows(path):
-            if not keep(word, len(code), is_ext):
+            if not keep(word, len(code), code in four_single):
                 continue
             total += 1
             bucket = table.get(code)
