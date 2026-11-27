@@ -9,10 +9,19 @@
            从哪 | 从南 | ……          ← 豆包原生候选（顺延）
 ```
 
-- 适用：豆包输入法 `com.bytedance.android.doubaoime`（实测 1.5.6）
+- 适用：豆包输入法 `com.bytedance.android.doubaoime`（实测 1.5.7）
 - 环境：Android 8.0+，LSPosed / NPatch 内置
-- 当前版本：**3.0**
+- 当前版本：**3.0**（完整版，`main` 分支）
 - 词库：直接取自 [Ktouls/rime-JDhe-CyIME](https://github.com/Ktouls/rime-JDhe-CyIME) 的 yaml，137,228 码
+
+### 两个分支
+
+| 分支 | 版本 | 编码数 | 适合 |
+|---|---|---|---|
+| **`single-only`** | **3.3** | 38,624 | **日常用这个**。一简/二简/三简全留，四码只挂单字与符号，四码多字词交给豆包 |
+| `main` | 3.0 | 137,228 | 完整版，四码词也一并挂上（候选更长） |
+
+下载：[简码保留版 3.3](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.3-single/SimpleHe-DoubaoIME-3.3-single.apk) · [完整版 3.0](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.0-full/SimpleHe-DoubaoIME-3.0-full.apk)
 
 ---
 
@@ -237,6 +246,9 @@ cs|na  ==  csn|a
 | 2.8 | 修长句分段选词错位：点击候选后若未触发上屏且剩余编码缩短，自动锁定分段选词态并将后续尾段全程交还豆包，直至整句上屏或清空编码 |
 | 2.9 | 修 `oyy` 丢候选：`gen_dict.py` 的「清理 ① 占位」曾误删 `oyy` 的正规 `①`；新增 `RESTORE` 表只补回 `oyy`，四码冗余位保持删除 |
 | **3.0** | **完整版**：重新生成词库，修复 `ofyu` 补回符号组里的 ①（137,228 码）|
+| 3.1（简码保留分支） | 四码若含扩展生僻字，主表候选一并挂上、生僻字垫底 |
+| 3.2（简码保留分支） | 四码生僻字自动让位：首选是生僻字时豆包首选占第 1、简单鹤字排第 2 |
+| **3.3**（简码保留分支） | **四码单字一律让位**：取消常用字判断，首选只要是汉字单字（不分常用/生僻）就固定排第 2；词与符号仍占第 1 |
 
 ---
 
