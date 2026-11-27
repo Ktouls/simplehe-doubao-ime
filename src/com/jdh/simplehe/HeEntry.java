@@ -27,7 +27,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 3.2。
+ * 简单鹤音形挂载 3.3。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -53,8 +53,6 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static final String IC_WRAPPER = "com.bytedance.android.input.editor.InputConnectionWrapper";
     private static final String MODULE_PKG = "com.jdh.simplehe";
     private static final String DICT_ASSET = "assets/jdh_dict_multi.txt";
-    /** 常用字表（GB2312 一级 3755 字）。四码若简单鹤首选是生僻单字，让位给豆包首选。 */
-    private static final String COMMON_ASSET = "assets/common_chars.txt";
 
     private static final String CONFIG_FILE = "/sdcard/Download/jdh_config";
     private static final String SWITCH_FILE = "/sdcard/Download/jdh_enable";
@@ -126,16 +124,13 @@ public final class HeEntry implements IXposedHookLoadPackage {
     }
 
     private static volatile FlatDict dict;
-    /** 常用字集合（GB2312 一级 3755 字）；为空时不做生僻字让位。 */
-    private static final java.util.Set<Character> COMMON = new java.util.HashSet<>(4096);
-    private static volatile boolean commonReady;
 
     /** 一帧画面：原子保存当前编码、简单鹤合并列表及豆包原生首选。 */
     private static final class Paint {
         final String code;
         final String[] shown;
         final int own;
-        /** 简单鹤候选在 shown 里的起始下标（生僻字让位时为 1）。 */
+        /** 简单鹤候选在 shown 里的起始下标（四码单字让位时为 1）。 */
         final int ownStart;
         final String engineFirst;
 
@@ -179,7 +174,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 3.2 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 3.3 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal
@@ -284,7 +279,6 @@ public final class HeEntry implements IXposedHookLoadPackage {
                     }
                     FlatDict loaded = parseFlat(input);
                     dict = loaded;
-                    loadCommonChars();
                     long cost = System.currentTimeMillis() - t0;
                     HeLog.f("INIT", "词库就绪 " + loaded.size() + " 码，最大码长=" + loaded.maxCodeLen
                             + "，池=" + (loaded.pool.length / 1024) + "KB，耗时=" + cost + "ms");
@@ -298,39 +292,15 @@ public final class HeEntry implements IXposedHookLoadPackage {
         loader.start();
     }
 
-    /** 加载常用字表；失败不影响主流程（退化为全部置顶）。 */
-    private static void loadCommonChars() {
-        try {
-            InputStream in = openAsset(COMMON_ASSET);
-            if (in == null) {
-                HeLog.f("ERR", "常用字表打开失败，退化为全部置顶");
-                return;
-            }
-            StringBuilder sb = new StringBuilder(4096);
-            try (java.io.BufferedReader r = new java.io.BufferedReader(
-                    new java.io.InputStreamReader(in, java.nio.charset.StandardCharsets.UTF_8))) {
-                String line;
-                while ((line = r.readLine()) != null) sb.append(line);
-            }
-            for (int i = 0; i < sb.length(); i++) {
-                char c = sb.charAt(i);
-                if (!Character.isWhitespace(c)) COMMON.add(c);
-            }
-            commonReady = !COMMON.isEmpty();
-            HeLog.f("INIT", "常用字表 " + COMMON.size() + " 字");
-        } catch (Throwable t) {
-            HeLog.f("ERR", "常用字表加载异常: " + t);
-        }
-    }
-
-    /** 是否是"常用汉字"：是汉字但不在常用字表 → 生僻。 */
-    private static boolean isRareHan(String w) {
-        if (!commonReady) return false;              // 没有字表就不让位
+    /**
+     * 是否是汉字单字（不含多字词、不含符号）。
+     * 四码时只要简单鹤首选是单字，不论常用还是生僻，一律让位到第 2 位：
+     * 手机上四码打单词远多于单个字，固定位次比"猜它常不常用"更省心。
+     */
+    private static boolean isHanChar(String w) {
         if (w == null || w.length() != 1) return false;
         char c = w.charAt(0);
-        boolean han = (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF);
-        if (!han) return false;
-        return !COMMON.contains(c);
+        return (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF);
     }
 
     private static InputStream openAsset(String asset) {
@@ -727,11 +697,11 @@ public final class HeEntry implements IXposedHookLoadPackage {
             spaceArmed = false;
         }
 
-        // 四码生僻字让位：简单鹤首选是生僻单字时，豆包首选占第 1 位，生僻字排第 2。
-        // 目的：uiqk → 豆包「事情」在前、简单鹤「鲥」垫后，避免生僻字抢首选。
+        // 四码单字让位：简单鹤首选是汉字单字时，豆包首选占第 1 位，该字固定排第 2。
+        // 不分常用/生僻——位置统一，不必再判断它常不常用。词与符号仍然占第 1 位。
         boolean demote = false;
         String mineFirst = mine[0];
-        if (code.length() == 4 && isRareHan(mineFirst)
+        if (code.length() == 4 && isHanChar(mineFirst)
                 && words.length > 0 && words[0] != null && !words[0].isEmpty()
                 && !words[0].equals(mineFirst)) {
             demote = true;
@@ -779,7 +749,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         lastPaint = new Paint(code, shown, own, ownStart, engineFirst);
 
         if (cfgDebug && exact) {
-            if (demote) HeLog.throttled("DEMOTE", "编码=" + code + " 生僻字[" + mineFirst + "]让位，豆包首选[" + words[0] + "]在前");
+            if (demote) HeLog.throttled("DEMOTE", "编码=" + code + " 单字[" + mineFirst + "]让位，豆包首选[" + words[0] + "]在前");
             HeLog.throttled("EXACT", "[全塞]编码=" + code + " 简单鹤" + own + "格 + 豆包"
                     + (shown.length - own) + "格 = " + shown.length);
         }
