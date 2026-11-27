@@ -6,10 +6,15 @@
 不改 res/ 与 AndroidManifest 结构的场景。
 
 用法：
-    python3 tools/repack.py <base.apk> <keystore> <output.apk> [--version 2.4]
+    python3 tools/repack.py <base.apk> <keystore> <output.apk> [--version 3.6]
 
 versionName 在 AXML 字符串池里是 UTF-16 的定长字符串，只能等长替换。
-当前容器基准版本是 1.2，所以支持的替换长度与 1.2 相同（3 字符）。
+基准版本是 shell 里的 1.2（3 字符），所以目标版本也必须 3 字符。
+
+Android 11+ 的硬性要求：targetSdk >= 30 时 resources.arsc 必须以
+STORED（未压缩）方式存放并 4 字节对齐，否则解析阶段就报
+INSTALL_PARSE_FAILED_RESOURCES_ARSC_COMPRESSED，安装器连界面都不弹。
+所以重写 zip 时 resources.arsc 强制 STORED，随后 zipalign 4 字节对齐。
 """
 import os
 import subprocess
@@ -30,9 +35,11 @@ def patch_manifest(data: bytes, new_ver: str) -> bytes:
     new = new_ver.encode("utf-16-le")
     if len(new) != len(old):
         raise SystemExit(f"versionName 必须等长（基准 {BASE_VER!r}）")
-    if data.count(old) != 1:
-        raise SystemExit("versionName 字符串定位失败，中止")
-    return data.replace(old, new)
+    if data.count(old) == 1:
+        return data.replace(old, new)
+    if data.count(new) == 1:
+        return data              # 壳 APK 里已经是目标版本名，不必改
+    raise SystemExit("versionName 字符串定位失败，中止")
 
 
 def main() -> None:
@@ -75,21 +82,47 @@ def main() -> None:
             else:
                 payload = src.read(name)
             entry = zipfile.ZipInfo(name, date_time=info.date_time)
-            entry.compress_type = info.compress_type
+            # Android 11+ 要求 resources.arsc 未压缩，否则整包解析失败
+            entry.compress_type = (zipfile.ZIP_STORED if name == "resources.arsc"
+                                   else info.compress_type)
             entry.external_attr = info.external_attr
             dst.writestr(entry, payload)
 
     for path in (aligned, out):
         if os.path.exists(path):
             os.remove(path)
-    subprocess.check_call(["zipalign", "-f", "-p", "4", unsigned, aligned])
+    subprocess.check_call(["zipalign", "-f", "4", unsigned, aligned])
     subprocess.check_call([
         "apksigner", "sign",
         "--ks", ks, "--ks-pass", "pass:android", "--key-pass", "pass:android",
+        "--v1-signing-enabled", "true",
+        "--v2-signing-enabled", "true",
+        "--v3-signing-enabled", "true",
         "--out", out, aligned,
     ])
+    check_arsc(out)
     subprocess.check_call(["apksigner", "verify", "--print-certs", out])
     print("产物:", out, os.path.getsize(out), "bytes")
+
+
+def check_arsc(path: str) -> None:
+    """确认 resources.arsc 是 STORED 且 4 字节对齐（Android 11+ 安装要求）。"""
+    import struct
+    with open(path, "rb") as fh:
+        blob = fh.read()
+    with zipfile.ZipFile(path) as z:
+        info = z.getinfo("resources.arsc")
+    off = info.header_offset
+    # 必须读本地文件头的 extra 长度：zipalign 的对齐填充写在这里，
+    # 中央目录里的 extra 可能为空，按它算偏移会误判。
+    fields = struct.unpack("<IHHHHHIIIHH", blob[off:off + 30])
+    method, name_len, extra_len = fields[3], fields[9], fields[10]
+    data_off = off + 30 + name_len + extra_len
+    if method != 0:
+        raise SystemExit("resources.arsc 未被 STORED 存放，Android 11+ 会安装失败")
+    if data_off % 4 != 0:
+        raise SystemExit(f"resources.arsc 偏移 {data_off} 未 4 字节对齐")
+    print(f"arsc 校验通过：STORED，偏移 {data_off}（4 字节对齐）")
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 package com.jdh.simplehe;
 
+import android.view.ViewConfiguration;
+
 import de.robv.android.xposed.IXposedHookLoadPackage;
 import de.robv.android.xposed.XC_MethodHook;
 import de.robv.android.xposed.XposedBridge;
@@ -27,7 +29,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 3.5。
+ * 简单鹤音形挂载 3.6。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -157,6 +159,15 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static volatile long spaceAt;
     private static volatile int lastMode = -1;
 
+    // ---- 点击判定打点（排查"单击被当成长按"） ----
+    /** 按下时刻（onCandidateBarItemButtonDown 捕获），0 表示没捕获到 DOWN。 */
+    private static volatile long lastDownAt;
+    /** 系统长按阈值，来自 ViewConfiguration，受过无障碍"按住延迟"等设置影响。 */
+    private static volatile int longPressTimeout = -1;
+    /** 本帧候选的 ID / 类型数组（与豆包实际收到的那份一致），用于日志。 */
+    private static volatile int[] lastIds;
+    private static volatile int[] lastTypes;
+
     /** 分段选词态：点击候选后若未上屏且剩余编码缩短，说明豆包正处于长句/分段选词，后续尾段交还豆包。 */
     private static volatile int lastSnapshotCodeLen;
     private static volatile boolean pendingPartialClick;
@@ -174,12 +185,19 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 3.5 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 3.6 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal
                 + " 点击对齐=" + (cfgClickFix ? "ON" : "OFF")
                 + " 空格替换=" + (cfgSpaceOverride ? "ON" : "OFF"));
+
+        try {
+            longPressTimeout = ViewConfiguration.getLongPressTimeout();
+            HeLog.f("INIT", "系统长按阈值=" + longPressTimeout + "ms（无障碍「按住延迟」等设置会影响它）");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "读取长按阈值失败: " + t);
+        }
 
         if (!cfgEnabled) {
             HeLog.f("INIT", "总开关关闭，未安装任何 Hook");
@@ -736,8 +754,23 @@ public final class HeEntry implements IXposedHookLoadPackage {
         String engineFirst = words[0] != null ? words[0] : "";
         String[] shown = total == buf.length ? buf : Arrays.copyOf(buf, total);
 
+        // 注入格借用哪个候选的 ID/类型：优先"第一个词类型候选"，而不是末位。
+        // 末位可能是推荐图标表情、用户词或工具项，借来会让豆包把这一格当成"操作项"而不是可上屏的词。
+        int seed = 0;
+        if (ids != null && types != null) {
+            int limit = Math.min(types.length, words.length);
+            seed = -1;
+            for (int i = 0; i < limit; i++) {
+                if (types[i] == 1) {
+                    seed = i;
+                    break;
+                }
+            }
+            if (seed < 0) seed = 0;
+        }
+
         if (cfgMergeAll && shown.length != words.length && ids != null && types != null) {
-            resizeArrays(args, shown, words.length, ids, types);
+            resizeArrays(args, shown, words.length, ids, types, seed);
         } else {
             for (int i = 0; i < words.length; i++) {
                 words[i] = i < shown.length ? shown[i] : "";
@@ -746,12 +779,15 @@ public final class HeEntry implements IXposedHookLoadPackage {
         syncAuxArray(args, ARG_AUX_1, origIdx, shown.length);
         syncAuxArray(args, ARG_AUX_2, origIdx, shown.length);
 
+        lastIds = args[ARG_IDS] instanceof int[] ? (int[]) args[ARG_IDS] : null;
+        lastTypes = args[ARG_TYPES] instanceof int[] ? (int[]) args[ARG_TYPES] : null;
         lastPaint = new Paint(code, shown, own, ownStart, engineFirst);
 
         if (cfgDebug && exact) {
             if (demote) HeLog.throttled("DEMOTE", "编码=" + code + " 单字[" + mineFirst + "]让位，豆包首选[" + words[0] + "]在前");
             HeLog.throttled("EXACT", "[全塞]编码=" + code + " 简单鹤" + own + "格 + 豆包"
-                    + (shown.length - own) + "格 = " + shown.length);
+                    + (shown.length - own) + "格 = " + shown.length
+                    + " 注入格种子=格" + seed);
         }
     }
 
@@ -782,18 +818,23 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
     /**
      * 词数组换成等长副本，同步扩缩候选 ID / 类型 / 偏移数组。
-     * 扩展时偏移数组尾部复制末值让"子候选展开"分支退化为空；收窄时截断尾部避免空白格。
+     * 扩展时注入格借用 seed 格的 ID/类型（默认第一个"词"类型候选），
+     * 偏移数组仍复制末值让"子候选展开"分支退化为空；收窄时截断尾部避免空白格。
      */
-    private static void resizeArrays(Object[] args, String[] shown, int base, int[] ids, int[] types) {
+    private static void resizeArrays(Object[] args, String[] shown, int base, int[] ids, int[] types, int seed) {
         int size = shown.length;
         args[ARG_WORDS] = shown;
 
+        int seedIdx = 0;
+        if (base > 0 && ids.length > 0 && types.length > 0) {
+            seedIdx = Math.max(0, Math.min(seed, Math.min(base - 1, Math.min(ids.length, types.length) - 1)));
+        }
         int copyLen = Math.min(base, size);
 
         int[] newIds = new int[size];
         System.arraycopy(ids, 0, newIds, 0, copyLen);
         if (size > base) {
-            int fillId = base > 0 ? ids[base - 1] : 0;
+            int fillId = ids.length > 0 ? ids[seedIdx] : 0;
             Arrays.fill(newIds, base, size, fillId);
         }
         args[ARG_IDS] = newIds;
@@ -801,7 +842,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         int[] newTypes = new int[size];
         System.arraycopy(types, 0, newTypes, 0, copyLen);
         if (size > base) {
-            int fillType = base > 0 ? types[base - 1] : 1;
+            int fillType = types.length > 0 ? types[seedIdx] : 1;
             Arrays.fill(newTypes, base, size, fillType);
         }
         args[ARG_TYPES] = newTypes;
@@ -844,6 +885,8 @@ public final class HeEntry implements IXposedHookLoadPackage {
         clickOrigin = "";
         clickTarget = "";
         spaceArmed = false;
+        lastIds = null;
+        lastTypes = null;
     }
 
     private static void resetPartialSelection() {
@@ -897,6 +940,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
             XposedBridge.hookMethod(down, new XC_MethodHook() {
                 @Override
                 protected void beforeHookedMethod(MethodHookParam param) {
+                    lastDownAt = System.currentTimeMillis();
                     spaceArmed = false;
                 }
             });
@@ -917,6 +961,21 @@ public final class HeEntry implements IXposedHookLoadPackage {
         int index = args[1] instanceof Integer ? (Integer) args[1] : -1;
         String engineWord = args[3] instanceof String ? (String) args[3] : "";
         String code = args[5] instanceof String ? (String) args[5] : "";
+
+        if (cfgDebug) {
+            long now = System.currentTimeMillis();
+            long held = lastDownAt > 0 ? now - lastDownAt : -1;
+            int[] ids = lastIds;
+            int[] types = lastTypes;
+            String idText = (ids != null && index >= 0 && index < ids.length) ? String.valueOf(ids[index]) : "未记录";
+            String typeText = (types != null && index >= 0 && index < types.length) ? String.valueOf(types[index]) : "未记录";
+            boolean overThreshold = held >= 0 && longPressTimeout > 0 && held >= longPressTimeout;
+            HeLog.f("TAP", "编码=" + code + " 格" + index
+                    + " 按住=" + (held < 0 ? "DOWN未捕获" : held + "ms")
+                    + " 阈值=" + longPressTimeout + "ms"
+                    + " id=" + idText + " type=" + typeText
+                    + (overThreshold ? " ← 已超阈值，豆包会当长按处理" : ""));
+        }
 
         int baseLen = !code.isEmpty() ? code.length() : lastSnapshotCodeLen;
         if (baseLen > 0) {
@@ -1012,6 +1071,8 @@ public final class HeEntry implements IXposedHookLoadPackage {
                 clickOrigin = "";
                 if (cfgDebug) HeLog.f("CLICKFIX", "上屏 " + text + " -> " + target + "（对齐候选栏显示）");
                 return;
+            } else if (cfgDebug) {
+                HeLog.f("CLICKMISS", "点击后上屏[" + text + "]，与显示[" + target + "]/引擎[" + clickOrigin + "]都不符");
             }
         }
 
