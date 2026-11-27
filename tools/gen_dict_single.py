@@ -55,7 +55,12 @@ SOURCES = [
 ]
 
 CODE_RE = re.compile(r"^[a-z]{1,4}$")
-HAN_RANGES = ((0x4E00, 0x9FFF), (0x3400, 0x4DBF))
+HAN_RANGES = (
+    (0x4E00, 0x9FFF),    # 基本区
+    (0x3400, 0x4DBF),    # 扩展 A
+    (0xF900, 0xFAFF),    # 兼容汉字
+    (0x20000, 0x323AF),  # 扩展 B–H（𫵷 这类，Java 里占 2 个 char）
+)
 # 括号包住的短符号：（一）（10）(10) 等
 PAREN_RE = re.compile(r"^[（(].{1,3}[）)]$")
 

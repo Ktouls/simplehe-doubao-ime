@@ -29,7 +29,7 @@ import java.util.zip.ZipEntry;
 import java.util.zip.ZipFile;
 
 /**
- * 简单鹤音形挂载 3.6。
+ * 简单鹤音形挂载 3.7。
  *
  * <p>策略：<b>该码下简单鹤的全部候选排在最前，豆包自己的候选原样接在后面</b>，
  * 一个都不删。空格按简单鹤首选上屏。
@@ -185,7 +185,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         HeLog.initAndReport("INIT");
         loadConfig();
-        HeLog.f("INIT", "简单鹤音形挂载 3.6 | 进程=" + lp.processName
+        HeLog.f("INIT", "简单鹤音形挂载 3.7 | 进程=" + lp.processName
                 + " 开关=" + (cfgEnabled ? "ON" : "OFF")
                 + " 全塞=" + (cfgMergeAll ? "ON" : "OFF")
                 + " 上限=" + cfgMaxTotal
@@ -316,9 +316,16 @@ public final class HeEntry implements IXposedHookLoadPackage {
      * 手机上四码打单词远多于单个字，固定位次比"猜它常不常用"更省心。
      */
     private static boolean isHanChar(String w) {
-        if (w == null || w.length() != 1) return false;
-        char c = w.charAt(0);
-        return (c >= 0x3400 && c <= 0x4DBF) || (c >= 0x4E00 && c <= 0x9FFF);
+        // 必须按 code point 判断：扩展 B 区及以上的汉字（如 𫵷 U+2BD77）
+        // 在 Java 里一个字符占 2 个 char，String.length() 会是 2。
+        // 早先写成 length()!=1 直接 return false，导致这类字的码永远不触发让位。
+        if (w == null || w.isEmpty()) return false;
+        if (w.codePointCount(0, w.length()) != 1) return false;
+        int c = w.codePointAt(0);
+        return (c >= 0x3400 && c <= 0x4DBF)      // 扩展 A
+                || (c >= 0x4E00 && c <= 0x9FFF)  // 基本区
+                || (c >= 0xF900 && c <= 0xFAFF)  // 兼容汉字
+                || (c >= 0x20000 && c <= 0x323AF); // 扩展 B–H
     }
 
     private static InputStream openAsset(String asset) {

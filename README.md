@@ -19,7 +19,7 @@
 | | 简码保留版（本分支） | 完整版 |
 |---|---|---|
 | 分支 | `single-only` | `main` |
-| 版本 | **3.6** | **3.6** |
+| 版本 | **3.7** | **3.7** |
 | 一简 / 二简 / 三简 | 全留 | 全留 |
 | 四码：单字与符号 | 挂 | 挂 |
 | 四码：该码有单字 | 只挂单字与符号，**词不挂** | 全挂 |
@@ -29,8 +29,8 @@
 | 词库 / APK | 2.3 MB / 1.29 MB | 2.4 MB / 1.36 MB |
 | 适合 | **日常用**：四码打单字更准 | 原汁原味，词也在候选栏第一屏 |
 
-- [下载 简码保留版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-single/SimpleHe-DoubaoIME-3.6-single.apk)（本页）
-- [下载 完整版 3.6](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.6-full/SimpleHe-DoubaoIME-3.6-full.apk)
+- [下载 简码保留版 3.7](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.7-single/SimpleHe-DoubaoIME-3.7-single.apk)（本页）
+- [下载 完整版 3.7](https://github.com/Ktouls/simplehe-doubao-ime/releases/download/v3.7-full/SimpleHe-DoubaoIME-3.7-full.apk)
 
 两个版本签名相同（`c98b2032…`），可以互相覆盖安装，也可以按需来回切换。
 
@@ -322,7 +322,8 @@ cs|na  ==  csn|a
 | 3.3 | 四码单字一律让位：取消常用字判断，首选只要是汉字单字（不分常用/生僻）就固定排第 2；删去 `common_chars.txt` |
 | 3.4 | 四码不再挂词：词库生成侧剔除四码全部含汉字多字词，四码只剩单个汉字与符号。候选项 77,916 → 67,208 |
 | 3.5 | **四码无单字则保留词**：该码没有任何单字时（如 `smuh → 什么时候`）候选原样保留，不再整码丢空；有单字的四码仍只留单字与符号。候选项 67,208 → 203,255 |
-| **3.6** | **修「单击注入候选弹出固定首位」**：注入格改为借用第一个普通词类型（`type == 1`）候选的 ID/类型，不再借末位（末位可能是推荐图标、用户词、工具项，豆包会把那格当操作项）。新增 `TAP` / `CLICKMISS` 打点、`INIT` 打印系统长按阈值。同时修打包：`resources.arsc` 改为 STORED + 4 字节对齐，Android 11+ 不再装不上 |
+| 3.6 | 修「单击注入候选弹出固定首位」：注入格改为借用第一个普通词类型（`type == 1`）候选的 ID/类型，不再借末位（末位可能是推荐图标、用户词、工具项，豆包会把那格当操作项）。新增 `TAP` / `CLICKMISS` 打点、`INIT` 打印系统长按阈值。同时修打包：`resources.arsc` 改为 STORED + 4 字节对齐，Android 11+ 不再装不上 |
+| **3.7** | **修扩展区汉字不被当单字**：`𫵷`、`𨭉` 这类扩展 B 区及以上的字在 Java 里占 2 个 char，`isHanChar` 原来用 `length()==1` 判断，把它们当成非单字 → 首选是这类字时**不触发让位**、字赖在第 1 位。改为按 `codePointCount` 判断并纳入扩展 B–H。词库脚本 `is_han` 同步放宽，48 个"只有扩展区单字"的四码之前被误判成"无单字"、把词留下了，现已正确剔词 |
 
 ---
 
