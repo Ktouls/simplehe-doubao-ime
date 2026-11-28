@@ -1,5 +1,6 @@
 package com.jdh.simplehe;
 
+import android.graphics.Typeface;
 import android.view.ViewConfiguration;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -15,6 +16,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -84,6 +86,32 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static volatile int cfgMaxTotal = 24;
     private static volatile long cfgSpaceTtlMs = 1500L;
     private static volatile long cfgClickTtlMs = 2500L;
+    private static volatile boolean cfgTypefaceCache = true;
+
+    // ---- MIUI 字体回退缓存 ----
+    /*
+     * 背景（实测字节码）：miui.util.TypefaceHelper.checkFallbackFont(Typeface) 是
+     * public static synchronized，内部拿 sFontMap.get(weight) 与**入参**比较，
+     * 存进去的却是它自己新建的字体对象，两者永不相等，于是每次调用都重新执行
+     * createTypeface() -> FontCollection::init()，并且全程持类锁。
+     * 豆包键盘滑动时每帧都会走这条路径，帧就被卡住。
+     * 这里按「入参实例 + 字重/样式」补一层真正有效的缓存，只让第一次真正构建。
+     */
+    private static final class TfCacheEntry {
+        final WeakReference<Object> in;
+        final Object out;
+        TfCacheEntry(Object in, Object out) {
+            this.in = new WeakReference<>(in);
+            this.out = out;
+        }
+        boolean matches(Object candidate) {
+            return candidate != null && in.get() == candidate;
+        }
+    }
+
+    private static final Map<String, TfCacheEntry> TF_CACHE = new HashMap<>();
+    private static int tfCacheHits;
+    private static int tfCacheMiss;
 
     // ---- 扁平词库（仅 3 个基本类型数组，避免 50 万常驻堆对象拖慢 GC） ----
     private static final class FlatDict {
@@ -234,6 +262,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         }
 
         hookCommitText(lp.classLoader);
+        installTypefaceCache(lp.classLoader);
     }
 
     // =====================================================================
@@ -269,6 +298,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         cfgSpaceTtlMs = clampLong(conf.get("space_ttl_ms"), cfgSpaceTtlMs, 200, 5000);
         cfgClickTtlMs = clampLong(conf.get("click_ttl_ms"), cfgClickTtlMs, 200, 5000);
         cfgStaleGuardMs = clampLong(conf.get("stale_guard_ms"), cfgStaleGuardMs, 0, 5000);
+        cfgTypefaceCache = bool(conf.get("typeface_cache"), cfgTypefaceCache);
     }
 
     private static boolean bool(String value, boolean fallback) {
@@ -1156,6 +1186,137 @@ public final class HeEntry implements IXposedHookLoadPackage {
                 args[0] = first;
                 if (cfgDebug) HeLog.f("SPACEPUT", "编码=" + paint.code + " 空格(commitText) " + text + " -> " + first);
             }
+        }
+    }
+
+    // =====================================================================
+    // MIUI 字体回退缓存
+    // =====================================================================
+
+    /**
+     * miui.util.TypefaceHelper 的 fallback 缓存是坏的：它把「自己新建的字体」存进
+     * sFontMap，却拿「调用方传进来的原字体」去比较，两者永不相等，于是每次都重建
+     * FontCollection（百毫秒级，且持类锁）。这里按「入参实例 + 字重」补一层有效缓存。
+     */
+    private static void installTypefaceCache(ClassLoader loader) {
+        if (!cfgTypefaceCache) {
+            HeLog.f("INIT", "字体回退缓存=OFF（配置 typeface_cache=0）");
+            return;
+        }
+        Class<?> helper;
+        try {
+            helper = Class.forName("miui.util.TypefaceHelper", false, loader);
+        } catch (Throwable t) {
+            HeLog.f("INIT", "未找到 miui.util.TypefaceHelper，跳过字体回退缓存");
+            return;
+        }
+
+        try {
+            XposedBridge.hookAllMethods(helper, "checkFallbackFont", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    TfCacheEntry entry = tfLookup("c", in, tfWeight(in));
+                    if (entry != null && entry.matches(in)) {
+                        tfHit();
+                        param.setResult(entry.out);
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.hasThrowable()) return;
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    tfStore("c", in, tfWeight(in), param.getResult());
+                }
+            });
+            HeLog.f("INIT", "已挂 checkFallbackFont 缓存");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "hook checkFallbackFont 失败: " + t);
+        }
+
+        try {
+            XposedBridge.hookAllMethods(helper, "createTypeface", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    int style = intArg(param, 1);
+                    TfCacheEntry entry = tfLookup("t", in, style);
+                    if (entry != null && entry.matches(in)) {
+                        tfHit();
+                        param.setResult(entry.out);
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.hasThrowable()) return;
+                    Object in = firstArg(param);
+                    Object out = param.getResult();
+                    if (in == null || out == null) return;
+                    tfStore("t", in, intArg(param, 1), out);
+                }
+            });
+            HeLog.f("INIT", "已挂 createTypeface 缓存");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "hook createTypeface 失败: " + t);
+        }
+    }
+
+    private static Object firstArg(XC_MethodHook.MethodHookParam param) {
+        if (param.args == null || param.args.length == 0) return null;
+        return param.args[0];
+    }
+
+    private static int intArg(XC_MethodHook.MethodHookParam param, int index) {
+        if (param.args == null || param.args.length <= index) return 0;
+        Object v = param.args[index];
+        return v instanceof Integer ? ((Integer) v).intValue() : 0;
+    }
+
+    private static int tfWeight(Object typeface) {
+        if (!(typeface instanceof Typeface)) return 0;
+        try {
+            return ((Typeface) typeface).getWeight();
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private static String tfKey(String tag, Object in, int variant) {
+        return tag + "|" + System.identityHashCode(in) + "|" + variant;
+    }
+
+    private static TfCacheEntry tfLookup(String tag, Object in, int variant) {
+        synchronized (TF_CACHE) {
+            return TF_CACHE.get(tfKey(tag, in, variant));
+        }
+    }
+
+    private static void tfStore(String tag, Object in, int variant, Object out) {
+        synchronized (TF_CACHE) {
+            if (TF_CACHE.size() > 96) TF_CACHE.clear();
+            TF_CACHE.put(tfKey(tag, in, variant), new TfCacheEntry(in, out));
+            tfCacheMiss++;
+        }
+    }
+
+    private static void tfHit() {
+        int hits;
+        synchronized (TF_CACHE) {
+            hits = ++tfCacheHits;
+        }
+        if (cfgDebug && hits % 200 == 0) {
+            HeLog.f("TFCACHE", "命中 " + hits + " 次 / 重建 " + tfCacheMiss + " 次");
+        }
+    }
+
+    private static void tfMiss() {
+        synchronized (TF_CACHE) {
+            tfCacheMiss++;
         }
     }
 
