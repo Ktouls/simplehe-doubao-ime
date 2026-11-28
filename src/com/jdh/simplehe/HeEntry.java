@@ -1,5 +1,6 @@
 package com.jdh.simplehe;
 
+import android.graphics.Typeface;
 import android.view.ViewConfiguration;
 
 import de.robv.android.xposed.IXposedHookLoadPackage;
@@ -15,6 +16,7 @@ import java.io.FilterInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.lang.ref.WeakReference;
 import java.lang.reflect.Field;
 import java.lang.reflect.Method;
 import java.nio.charset.StandardCharsets;
@@ -84,6 +86,32 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static volatile int cfgMaxTotal = 24;
     private static volatile long cfgSpaceTtlMs = 1500L;
     private static volatile long cfgClickTtlMs = 2500L;
+    private static volatile boolean cfgTypefaceCache = true;
+
+    // ---- MIUI 字体回退缓存 ----
+    /*
+     * 背景（实测字节码）：miui.util.TypefaceHelper.checkFallbackFont(Typeface) 是
+     * public static synchronized，内部拿 sFontMap.get(weight) 与**入参**比较，
+     * 存进去的却是它自己新建的字体对象，两者永不相等，于是每次调用都重新执行
+     * createTypeface() -> FontCollection::init()，并且全程持类锁。
+     * 豆包键盘滑动时每帧都会走这条路径，帧就被卡住。
+     * 这里按「入参实例 + 字重/样式」补一层真正有效的缓存，只让第一次真正构建。
+     */
+    private static final class TfCacheEntry {
+        final WeakReference<Object> in;
+        final Object out;
+        TfCacheEntry(Object in, Object out) {
+            this.in = new WeakReference<>(in);
+            this.out = out;
+        }
+        boolean matches(Object candidate) {
+            return candidate != null && in.get() == candidate;
+        }
+    }
+
+    private static final Map<String, TfCacheEntry> TF_CACHE = new HashMap<>();
+    private static int tfCacheHits;
+    private static int tfCacheMiss;
 
     // ---- 扁平词库（仅 3 个基本类型数组，避免 50 万常驻堆对象拖慢 GC） ----
     private static final class FlatDict {
@@ -127,6 +155,12 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
     private static volatile FlatDict dict;
 
+    // ---- 单帧缓存：豆包常对同一编码反复重发快照，避免每次重新解串/分配 ----
+    private static volatile FlatDict cacheDict;
+    private static volatile String cacheCode = "";
+    private static volatile String[] cacheMine;
+    private static volatile boolean cacheExact;
+
     /** 一帧画面：原子保存当前编码、简单鹤合并列表及豆包原生首选。 */
     private static final class Paint {
         final String code;
@@ -155,6 +189,15 @@ public final class HeEntry implements IXposedHookLoadPackage {
     private static volatile boolean spaceArmed;
     private static volatile long spaceAt;
     private static volatile int lastMode = -1;
+
+    // ---- 快照新鲜度：防止"打完新码、候选栏还没刷新就按空格"上屏上一码的词 ----
+    /** 最近一次 setComposingText 写入的编码串（豆包实际接受的输入）。 */
+    private static volatile String lastComposing = "";
+    private static volatile long composingAt;
+    /** 最近一帧快照的时间，用于诊断"空格时快照有多旧"。 */
+    private static volatile long snapshotAt;
+    /** 保护窗口：输入变化后多久内认为快照可能落后；0 表示关闭该保护。 */
+    private static volatile long cfgStaleGuardMs = 800L;
 
     // ---- 点击判定打点（排查"单击被当成长按"） ----
     /** 按下时刻（onCandidateBarItemButtonDown 捕获），0 表示没捕获到 DOWN。 */
@@ -216,6 +259,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         }
 
         hookCommitText(lp.classLoader);
+        installTypefaceCache(lp.classLoader);
     }
 
     // =====================================================================
@@ -250,6 +294,8 @@ public final class HeEntry implements IXposedHookLoadPackage {
         cfgMaxTotal = clampInt(conf.get("max_total"), cfgMaxTotal, 9, 60);
         cfgSpaceTtlMs = clampLong(conf.get("space_ttl_ms"), cfgSpaceTtlMs, 200, 5000);
         cfgClickTtlMs = clampLong(conf.get("click_ttl_ms"), cfgClickTtlMs, 200, 5000);
+        cfgStaleGuardMs = clampLong(conf.get("stale_guard_ms"), cfgStaleGuardMs, 0, 5000);
+        cfgTypefaceCache = bool(conf.get("typeface_cache"), cfgTypefaceCache);
     }
 
     private static boolean bool(String value, boolean fallback) {
@@ -538,6 +584,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
     }
 
     private static void onSnapshot(Object[] args) {
+        snapshotAt = System.currentTimeMillis();
         if (args == null || args.length <= ARG_MODE) {
             resetPartialSelection();
             clearExact();
@@ -605,21 +652,32 @@ public final class HeEntry implements IXposedHookLoadPackage {
         int[] ids = args[ARG_IDS] instanceof int[] ? (int[]) args[ARG_IDS] : null;
         int[] types = args[ARG_TYPES] instanceof int[] ? (int[]) args[ARG_TYPES] : null;
 
-        String[] mine = currentDict.get(code);
-        boolean exact = mine != null;
-        if (!exact) {
-            if (!cfgMergePrefix) {
+        String[] mine;
+        boolean exact;
+        if (currentDict == cacheDict && code.equals(cacheCode) && cacheMine != null) {
+            mine = cacheMine;
+            exact = cacheExact;
+        } else {
+            mine = currentDict.get(code);
+            exact = mine != null;
+            if (!exact) {
+                if (!cfgMergePrefix) {
+                    clearExact();
+                    return;
+                }
+                mine = currentDict.getPrefix(code);
+                if (mine == null) {
+                    clearExact();
+                    return;
+                }
+            } else if (code.length() < cfgMinExactLen) {
                 clearExact();
                 return;
             }
-            mine = currentDict.getPrefix(code);
-            if (mine == null) {
-                clearExact();
-                return;
-            }
-        } else if (code.length() < cfgMinExactLen) {
-            clearExact();
-            return;
+            cacheDict = currentDict;
+            cacheCode = code;
+            cacheMine = mine;
+            cacheExact = exact;
         }
 
         merge(args, code, words, mine, ids, types, exact);
@@ -951,6 +1009,39 @@ public final class HeEntry implements IXposedHookLoadPackage {
         } catch (Throwable t) {
             HeLog.f("ERR", "commitText Hook 失败: " + t);
         }
+
+        // 记录实际写入的编码串，用于判断候选快照是否落后于输入
+        try {
+            Class<?> target = null;
+            try {
+                target = Class.forName(IC_WRAPPER, false, loader);
+            } catch (Throwable ignored) {
+            }
+            if (target == null) target = Class.forName("android.view.inputmethod.InputConnectionWrapper", false, loader);
+            Method compose = null;
+            try {
+                compose = target.getDeclaredMethod("setComposingText", CharSequence.class, int.class);
+            } catch (Throwable ignored) {
+            }
+            if (compose == null) {
+                Class<?> base = Class.forName("android.view.inputmethod.InputConnectionWrapper", false, loader);
+                compose = base.getDeclaredMethod("setComposingText", CharSequence.class, int.class);
+            }
+            XposedBridge.hookMethod(compose, new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        Object a0 = param.args.length > 0 ? param.args[0] : null;
+                        lastComposing = a0 instanceof CharSequence ? a0.toString() : "";
+                        composingAt = System.currentTimeMillis();
+                    } catch (Throwable ignored) {
+                    }
+                }
+            });
+            HeLog.f("INIT", "setComposingText Hook 已安装（快照新鲜度）");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "setComposingText Hook 失败: " + t);
+        }
     }
 
     private static void onCommitText(XC_MethodHook.MethodHookParam param) {
@@ -995,6 +1086,137 @@ public final class HeEntry implements IXposedHookLoadPackage {
                 args[0] = first;
                 if (cfgDebug) HeLog.f("SPACEPUT", "编码=" + paint.code + " 空格(commitText) " + text + " -> " + first);
             }
+        }
+    }
+
+    // =====================================================================
+    // MIUI 字体回退缓存
+    // =====================================================================
+
+    /**
+     * miui.util.TypefaceHelper 的 fallback 缓存是坏的：它把「自己新建的字体」存进
+     * sFontMap，却拿「调用方传进来的原字体」去比较，两者永不相等，于是每次都重建
+     * FontCollection（百毫秒级，且持类锁）。这里按「入参实例 + 字重」补一层有效缓存。
+     */
+    private static void installTypefaceCache(ClassLoader loader) {
+        if (!cfgTypefaceCache) {
+            HeLog.f("INIT", "字体回退缓存=OFF（配置 typeface_cache=0）");
+            return;
+        }
+        Class<?> helper;
+        try {
+            helper = Class.forName("miui.util.TypefaceHelper", false, loader);
+        } catch (Throwable t) {
+            HeLog.f("INIT", "未找到 miui.util.TypefaceHelper，跳过字体回退缓存");
+            return;
+        }
+
+        try {
+            XposedBridge.hookAllMethods(helper, "checkFallbackFont", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    TfCacheEntry entry = tfLookup("c", in, tfWeight(in));
+                    if (entry != null && entry.matches(in)) {
+                        tfHit();
+                        param.setResult(entry.out);
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.hasThrowable()) return;
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    tfStore("c", in, tfWeight(in), param.getResult());
+                }
+            });
+            HeLog.f("INIT", "已挂 checkFallbackFont 缓存");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "hook checkFallbackFont 失败: " + t);
+        }
+
+        try {
+            XposedBridge.hookAllMethods(helper, "createTypeface", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    Object in = firstArg(param);
+                    if (in == null) return;
+                    int style = intArg(param, 1);
+                    TfCacheEntry entry = tfLookup("t", in, style);
+                    if (entry != null && entry.matches(in)) {
+                        tfHit();
+                        param.setResult(entry.out);
+                    }
+                }
+
+                @Override
+                protected void afterHookedMethod(MethodHookParam param) {
+                    if (param.hasThrowable()) return;
+                    Object in = firstArg(param);
+                    Object out = param.getResult();
+                    if (in == null || out == null) return;
+                    tfStore("t", in, intArg(param, 1), out);
+                }
+            });
+            HeLog.f("INIT", "已挂 createTypeface 缓存");
+        } catch (Throwable t) {
+            HeLog.f("ERR", "hook createTypeface 失败: " + t);
+        }
+    }
+
+    private static Object firstArg(XC_MethodHook.MethodHookParam param) {
+        if (param.args == null || param.args.length == 0) return null;
+        return param.args[0];
+    }
+
+    private static int intArg(XC_MethodHook.MethodHookParam param, int index) {
+        if (param.args == null || param.args.length <= index) return 0;
+        Object v = param.args[index];
+        return v instanceof Integer ? ((Integer) v).intValue() : 0;
+    }
+
+    private static int tfWeight(Object typeface) {
+        if (!(typeface instanceof Typeface)) return 0;
+        try {
+            return ((Typeface) typeface).getWeight();
+        } catch (Throwable ignored) {
+            return 0;
+        }
+    }
+
+    private static String tfKey(String tag, Object in, int variant) {
+        return tag + "|" + System.identityHashCode(in) + "|" + variant;
+    }
+
+    private static TfCacheEntry tfLookup(String tag, Object in, int variant) {
+        synchronized (TF_CACHE) {
+            return TF_CACHE.get(tfKey(tag, in, variant));
+        }
+    }
+
+    private static void tfStore(String tag, Object in, int variant, Object out) {
+        synchronized (TF_CACHE) {
+            if (TF_CACHE.size() > 96) TF_CACHE.clear();
+            TF_CACHE.put(tfKey(tag, in, variant), new TfCacheEntry(in, out));
+            tfCacheMiss++;
+        }
+    }
+
+    private static void tfHit() {
+        int hits;
+        synchronized (TF_CACHE) {
+            hits = ++tfCacheHits;
+        }
+        if (cfgDebug && hits % 200 == 0) {
+            HeLog.f("TFCACHE", "命中 " + hits + " 次 / 重建 " + tfCacheMiss + " 次");
+        }
+    }
+
+    private static void tfMiss() {
+        synchronized (TF_CACHE) {
+            tfCacheMiss++;
         }
     }
 
@@ -1051,6 +1273,18 @@ public final class HeEntry implements IXposedHookLoadPackage {
         if (lastMode != MODE_DOUBLE_SPELL) return;
         Paint paint = lastPaint;
         if (paint == null || paint.shown.length == 0) return;
+        if (cfgDebug) {
+            long now = System.currentTimeMillis();
+            HeLog.f("SPACEDIAG", "快照码=" + paint.code + " 快照龄=" + (snapshotAt > 0 ? now - snapshotAt : -1)
+                    + "ms 实际输入=[" + lastComposing + "] 输入龄=" + (composingAt > 0 ? now - composingAt : -1)
+                    + "ms 保护窗=" + cfgStaleGuardMs + "ms");
+        }
+        // 快打防串码：快照落后于真实输入时，空格交还豆包，不用过期首选上屏
+        if (snapshotStale(paint, System.currentTimeMillis())) {
+            if (cfgDebug) HeLog.f("SPACESTALE", "实际输入=" + lastComposing
+                    + " 快照=" + paint.code + "，空格交还豆包");
+            return;
+        }
         spaceArmed = true;
         spaceAt = System.currentTimeMillis();
     }
@@ -1130,6 +1364,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
         if (now - spaceAt > cfgSpaceTtlMs) return;
         Paint paint = lastPaint;
         if (paint == null || paint.shown.length == 0) return;
+        if (snapshotStale(paint, now)) return;
         String first = paint.first();
         if (first == null || first.isEmpty() || first.equals(origin)) return;
         if (!shouldSpaceReplace(origin, paint.engineFirst, paint.code)) return;
@@ -1168,6 +1403,7 @@ public final class HeEntry implements IXposedHookLoadPackage {
 
         Paint paint = lastPaint;
         if (paint == null || paint.shown.length == 0) return;
+        if (snapshotStale(paint, now)) return;
         String first = paint.first();
         if (first == null || first.isEmpty()) return;
 
@@ -1180,6 +1416,24 @@ public final class HeEntry implements IXposedHookLoadPackage {
             args[3] = first;
         }
         if (cfgDebug) HeLog.f("SPACEPUT", "编码=" + paint.code + " 空格 " + origin + " -> " + first);
+    }
+
+    /**
+     * 候选快照是否落后于实际输入。
+     * 豆包在快速打字时会先收到新编码、候选栏却仍显示上一个编码的结果；
+     * 此时按空格若照旧"上屏简单鹤首选"，就会把上一码的词塞进去。
+     * 判定：最近一次 {@code setComposingText} 的内容与快照编码不一致，且发生在保护窗口内。
+     */
+    private static boolean snapshotStale(Paint paint, long now) {
+        if (cfgStaleGuardMs <= 0 || paint == null || paint.code == null) return false;
+        String comp = lastComposing;
+        if (comp == null || comp.isEmpty()) return false;
+        long at = composingAt;
+        if (at <= 0 || now - at > cfgStaleGuardMs) return false;
+        String cur = comp.trim().toLowerCase();
+        if (cur.isEmpty() || !isTypingCode(cur)) return false;
+        String snap = paint.code.trim().toLowerCase();
+        return !cur.equals(snap);
     }
 
     private static boolean shouldSpaceReplace(String origin, String engineFirst, String code) {
