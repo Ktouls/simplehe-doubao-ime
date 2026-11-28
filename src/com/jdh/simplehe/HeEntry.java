@@ -1111,18 +1111,48 @@ public final class HeEntry implements IXposedHookLoadPackage {
                     if (args == null || args.length == 0 || !(args[0] instanceof Integer)) return;
                     int key = (Integer) args[0];
                     if (key != FN_KEY_SPACE && key != FN_KEY_STOP) return;
-                    if (isAsrActive()) return;
-                    if (lastMode != MODE_DOUBLE_SPELL) return;
-                    Paint paint = lastPaint;
-                    if (paint == null || paint.shown.length == 0) return;
-                    spaceArmed = true;
-                    spaceAt = System.currentTimeMillis();
+                    armSpace();
                 }
             });
+            // 1.5.8+：空格键改为独立触摸组件，上屏走 native commitForSpace /
+            // commitForSpaceDoubleClick，不再经过 DoFunctionKey 的 key=3 分支。
+            // 在它们调用前布防，后面 DoCommit / executeCommit 出口才能接住替换。
+            // 1.5.7 没有这些方法时 findMethod 返回 null，自动跳过，保持兼容。
+            Method space = findMethod(keyboard, "commitForSpace");
+            if (space != null) {
+                XposedBridge.hookMethod(space, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        armSpace();
+                    }
+                });
+                HeLog.f("INIT", "空格 Hook(commitForSpace) 已安装");
+            }
+            Method spaceDouble = findMethod(keyboard, "commitForSpaceDoubleClick",
+                    boolean.class, boolean.class);
+            if (spaceDouble != null) {
+                XposedBridge.hookMethod(spaceDouble, new XC_MethodHook() {
+                    @Override
+                    protected void beforeHookedMethod(MethodHookParam param) {
+                        armSpace();
+                    }
+                });
+                HeLog.f("INIT", "空格 Hook(commitForSpaceDoubleClick) 已安装");
+            }
             HeLog.f("INIT", "空格 Hook 已安装");
         } catch (Throwable t) {
             HeLog.f("ERR", "空格 Hook 失败: " + t);
         }
+    }
+
+    /** 空格上屏前布防：仅在双拼编码态、有画面快照时armed，避免误伤普通空格。 */
+    private static void armSpace() {
+        if (isAsrActive()) return;
+        if (lastMode != MODE_DOUBLE_SPELL) return;
+        Paint paint = lastPaint;
+        if (paint == null || paint.shown.length == 0) return;
+        spaceArmed = true;
+        spaceAt = System.currentTimeMillis();
     }
 
     private static void initAsrFlag(Class<?> keyboard) {
@@ -1169,9 +1199,42 @@ public final class HeEntry implements IXposedHookLoadPackage {
                 XposedBridge.hookAllMethods(keyboard, "DoCommit", hook);
                 HeLog.f("INIT", "上屏 Hook 已安装（全重载回退）");
             }
+
+            // 1.5.8+：上屏改走 KeyboardJni.executeCommit（内部日志 [DoCommit]），
+            // 不再经过 DoCommit 5 参 / InputConnectionWrapper.commitText。
+            // args[0] 与旧 DoCommit 一样是提交文本，直接在此替换。
+            XposedBridge.hookAllMethods(keyboard, "executeCommit", new XC_MethodHook() {
+                @Override
+                protected void beforeHookedMethod(MethodHookParam param) {
+                    try {
+                        onExecuteCommit(param);
+                    } catch (Throwable t) {
+                        HeLog.f("ERR", "executeCommit 处理异常: " + t);
+                    }
+                }
+            });
+            HeLog.f("INIT", "上屏 Hook(executeCommit) 已安装");
         } catch (Throwable t) {
             HeLog.f("ERR", "上屏 Hook 失败: " + t);
         }
+    }
+
+    /** 1.5.8+ 的 executeCommit 上屏出口：空格替换，参数与旧 DoCommit 对齐（args[0]=提交文本）。 */
+    private static void onExecuteCommit(XC_MethodHook.MethodHookParam param) {
+        Object[] args = param.args;
+        if (args == null || args.length < 1 || !(args[0] instanceof CharSequence)) return;
+        String origin = args[0].toString();
+        if (!cfgSpaceOverride || !spaceArmed) return;
+        spaceArmed = false;
+        long now = System.currentTimeMillis();
+        if (now - spaceAt > cfgSpaceTtlMs) return;
+        Paint paint = lastPaint;
+        if (paint == null || paint.shown.length == 0) return;
+        String first = paint.first();
+        if (first == null || first.isEmpty() || first.equals(origin)) return;
+        if (!shouldSpaceReplace(origin, paint.engineFirst, paint.code)) return;
+        args[0] = first;
+        if (cfgDebug) HeLog.f("SPACEPUT", "编码=" + paint.code + " 空格(executeCommit) " + origin + " -> " + first);
     }
 
     private static void onDoCommit(XC_MethodHook.MethodHookParam param) {
