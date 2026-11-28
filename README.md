@@ -176,6 +176,7 @@ click_fix=1           # 点击对齐
 click_ttl_ms=2500
 space_override=1      # 空格上屏简单鹤首选
 space_ttl_ms=1500
+stale_guard_ms=800    # 快照新鲜度保护：输入刚变、候选栏还没刷新时，空格交还豆包；0=关闭
 debug=0               # 默认 0（只写 INIT/ERR），排查问题可改 1
 ```
 
